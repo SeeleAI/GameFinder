@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nexus Mod Research"
+  short_description: "Research Nexus Mods from an exact game page URL"
+  default_prompt: "Use $research-nexus-mods with this exact Nexus game-page URL to find and compare the best current, all-in-one, and development-reference mods."

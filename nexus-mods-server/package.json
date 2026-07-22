@@ -1,0 +1,35 @@
+{
+  "name": "nexus-mods-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local MCP server for Nexus Mods research and authorized downloads.",
+  "type": "module",
+  "bin": {
+    "nexus-mods-server": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live": "vitest run tests/live.test.ts",
+    "test:stdio": "tsx scripts/smoke-stdio.ts",
+    "acceptance:download": "tsx scripts/acceptance-download.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "tsx": "4.20.6",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

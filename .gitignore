@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.codex-work/acceptance-downloads/
+.codex-work/acceptance-research/
+.codex-work/skill-validator-deps/
+nexus-mods-server/.runtime/

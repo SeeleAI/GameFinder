@@ -1,4 +1,4 @@
 interface:
   display_name: "Nexus Mod Research"
-  short_description: "Research Nexus Mods from an exact game page URL"
-  default_prompt: "Use $research-nexus-mods with this exact Nexus game-page URL to find and compare the best current, all-in-one, and development-reference mods."
+  short_description: "MCP-first Nexus research from an exact game URL"
+  default_prompt: "Use $research-nexus-mods with this exact Nexus game-page URL to find and compare current, versatile, and development-reference mods using Nexus MCP data first."

@@ -1,0 +1,8 @@
+[mcp_servers.nexus-mods]
+command = "C:/Users/64617/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe"
+args = ["C:/Users/64617/Documents/GameFinder/nexus-mods-server/dist/index.js"]
+cwd = "C:/Users/64617/Documents/GameFinder/nexus-mods-server"
+env_vars = ["NEXUS_API_KEY"]
+startup_timeout_sec = 10
+tool_timeout_sec = 1800
+required = true

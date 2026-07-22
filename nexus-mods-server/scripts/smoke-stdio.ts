@@ -1,0 +1,52 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const serverEntry = path.join(projectDirectory, "dist", "index.js");
+
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: [serverEntry],
+  cwd: projectDirectory,
+  env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
+});
+const client = new Client({ name: "nexus-mods-server-stdio-smoke", version: "0.1.0" });
+
+try {
+  await client.connect(transport);
+  const tools = await client.listTools();
+  const required = [
+    "health_check",
+    "resolve_game",
+    "search_mods",
+    "get_mod",
+    "get_mod_files",
+    "get_mod_requirements",
+    "prepare_download",
+    "download_mod_file"
+  ];
+  const available = new Set(tools.tools.map((tool) => tool.name));
+  const missing = required.filter((name) => !available.has(name));
+  if (missing.length > 0) throw new Error(`Missing MCP tools: ${missing.join(", ")}`);
+
+  const health = await client.callTool({ name: "health_check", arguments: {} });
+  if (health.isError) throw new Error("health_check failed");
+
+  let liveValidated = false;
+  if (process.env.NEXUS_API_KEY) {
+    const validation = await client.callTool({ name: "validate_credentials", arguments: {} });
+    if (validation.isError) throw new Error("validate_credentials failed");
+    const mod = await client.callTool({
+      name: "get_mod",
+      arguments: { modUrl: "https://www.nexusmods.com/eldenring/mods/9531" }
+    });
+    if (mod.isError) throw new Error("get_mod acceptance smoke failed");
+    liveValidated = true;
+  }
+
+  process.stdout.write(`${JSON.stringify({ ok: true, toolCount: tools.tools.length, liveValidated })}\n`);
+} finally {
+  await client.close();
+}

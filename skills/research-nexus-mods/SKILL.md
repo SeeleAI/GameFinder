@@ -1,11 +1,11 @@
 ---
 name: research-nexus-mods
-description: Research, verify, compare, and recommend Nexus Mods for the exact game identified by a canonical Nexus game-page URL. Use for Nexus/N站 requests about popular, feature-rich, all-in-one, or development-reference mods, including verified mod links, functions, implementation type, language or loader evidence, compatibility, source licenses, community adoption, versatility, and development value. Require a URL under https://www.nexusmods.com/games/ followed by the game slug; do not install mods.
+description: Research, verify, compare, and recommend Nexus Mods for the exact game identified by a canonical Nexus game-page URL, using nexus-mods-server MCP first when available. Use for Nexus/N站 requests about popular, feature-rich, all-in-one, or development-reference mods, including verified mod links, functions, implementation type, language or loader evidence, compatibility, source licenses, community adoption, versatility, and development value. Require a URL under https://www.nexusmods.com/games/ followed by the game slug; do not download or install mods.
 ---
 
 # Research Nexus Mods
 
-Produce a current, evidence-backed Nexus Mod report for one unambiguous game. Browse the web for every research run because files, metrics, versions, permissions, and compatibility change.
+Produce a current, evidence-backed Nexus Mod report for one unambiguous game. Use `nexus-mods-server` as the primary source for Nexus identity, candidates, rankings, metrics, files, changelogs, and requirements. Browse the web for author-linked source, licenses, permissions, compatibility claims, and evidence gaps because those facts change and are not all exposed by the API.
 
 ## Require an exact game page
 
@@ -45,20 +45,21 @@ Treat feature examples as capability classes rather than mandatory literal match
 
 Before evaluating candidates, read:
 
+- [references/mcp-tool-sop.md](references/mcp-tool-sop.md) for the fixed MCP-first discovery and verification sequence, coverage rules, and fallback boundary.
 - [references/evaluation-framework.md](references/evaluation-framework.md) for discovery, evidence, metrics, and independent scoring rules.
 - [references/implementation-identification.md](references/implementation-identification.md) for implementation, language, loader, and confidence classification.
 - [references/report-contract.md](references/report-contract.md) for the required human-readable report and optional machine handoff.
 
 ## Research in layers
 
-1. Use the verified game page to establish the game identity and enter its Nexus mod ecosystem.
-2. Search Nexus listings and the web using the exact title, slug, abbreviations, requested capabilities, and ecosystem terms such as `all in one`, `utility`, `trainer`, `debug`, `menu`, `framework`, `loader`, `transmog`, `autorun`, `param`, and `tool`.
+1. Call `resolve_game` with the exact game page URL before any candidate search.
+2. Follow the query matrix in `mcp-tool-sop.md`: obtain all-game adoption rankings, recent/trending feeds, and multiple feature-query result sets with declared sort and rank scope.
 3. Build a diverse candidate pool instead of collecting near-duplicates. For broad requests, cover an all-in-one runtime tool, in-game configuration UI, requested specialist features, data/content editors, and loaders or frameworks when they exist.
-4. Open each serious candidate's Nexus page. Do not rank from search snippets or result order.
-5. Inspect the description, files, requirements, changelog, permissions, and author-linked source or documentation as available.
+4. Call `get_mod`, `get_mod_files`, `get_mod_requirements`, and, when available, `get_mod_changelogs` for every serious finalist. Do not rank from search snippets or relevance order.
+5. Browse finalist pages and author-linked sources only for API gaps such as permissions, issue/support evidence, repository, license, build documentation, and implementation details not established by file metadata.
 6. Verify the finalists, classify their implementation with an evidence level, score each evaluation dimension independently, and select winners appropriate to the requested goal.
 
-Do not download archives or executables merely to identify the implementation. If public Nexus metadata and author-linked sources do not establish a language or framework, report it as unknown. This skill researches only; downloading and installation belong to a separate workflow.
+Do not call `prepare_download` or `download_mod_file`, and do not download archives or executables merely to identify the implementation. If public Nexus metadata and author-linked sources do not establish a language or framework, report it as unknown. This skill researches only; downloading and installation belong to a separate workflow.
 
 ## Verify every finalist
 
@@ -75,6 +76,8 @@ Record:
 Never equate a public download with permission to reuse code or assets. An explicit repository license governs code reuse. Without one, recommend only behavioral or architectural observation.
 
 For popularity claims, identify the exact metric and observation date. Search rank is not evidence. Missing or login-gated metrics must be marked unavailable rather than estimated.
+
+Record the MCP source, `rankScope`, `coverage`, observation time, and warnings used to construct the candidate pool. Treat GraphQL relevance as semantic discovery only. Treat downloads, unique downloads, and endorsements as different metrics; call `get_mod` before reporting unique downloads.
 
 ## Keep conclusions separate
 
@@ -98,6 +101,8 @@ Follow [references/report-contract.md](references/report-contract.md) exactly. L
 The same mod may win more than one category. Include direct links beside claims and state evidence gaps, inference confidence, version limitations, licensing restrictions, and offline or anti-cheat risks.
 
 Emit the optional machine-readable handoff only when the user requests it, another skill will consume it, or installation is explicitly the next workflow. Do not create or install files during ordinary research.
+
+If `nexus-mods-server` is unavailable, returns an authentication/schema error, or lacks a required field, state the exact failure and use the bounded fallback in `mcp-tool-sop.md`. Do not silently begin with a general search engine when MCP is healthy.
 
 ## Safety boundary
 

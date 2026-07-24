@@ -19,12 +19,17 @@ try {
   const tools = await client.listTools();
   const required = [
     "health_check",
+    "browser_status",
+    "open_nexus_login",
     "resolve_game",
     "search_mods",
     "get_mod",
     "get_mod_files",
     "get_mod_requirements",
     "prepare_download",
+    "get_download_status",
+    "start_download",
+    "cancel_download",
     "download_mod_file"
   ];
   const available = new Set(tools.tools.map((tool) => tool.name));
@@ -33,6 +38,15 @@ try {
 
   const health = await client.callTool({ name: "health_check", arguments: {} });
   if (health.isError) throw new Error("health_check failed");
+  const browser = await client.callTool({ name: "browser_status", arguments: {} });
+  if (browser.isError) throw new Error("browser_status failed");
+
+  let browserLaunched = false;
+  if (process.env.NEXUS_BROWSER_STDIO_LAUNCH_TEST === "1") {
+    const login = await client.callTool({ name: "open_nexus_login", arguments: {} });
+    if (login.isError) throw new Error("open_nexus_login STDIO launch smoke failed");
+    browserLaunched = true;
+  }
 
   let liveValidated = false;
   if (process.env.NEXUS_API_KEY) {
@@ -46,7 +60,9 @@ try {
     liveValidated = true;
   }
 
-  process.stdout.write(`${JSON.stringify({ ok: true, toolCount: tools.tools.length, liveValidated })}\n`);
+  process.stdout.write(
+    `${JSON.stringify({ ok: true, toolCount: tools.tools.length, liveValidated, browserLaunched })}\n`
+  );
 } finally {
   await client.close();
 }

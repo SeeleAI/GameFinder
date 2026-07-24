@@ -110,6 +110,7 @@ describe("download integrity", () => {
     const output = await mkdtemp(path.join(os.tmpdir(), "nexus-mods-server-test-"));
     tempDirectories.push(output);
     const receipt = await manager.download(prepared.sessionId, output);
+    expect(receipt.backend).toBe("native");
     expect(receipt.bytes).toBe(22);
     expect(receipt.archiveCheck).toMatchObject({ format: "zip", valid: true });
     expect(receipt.sha256).toMatch(/^[a-f0-9]{64}$/);

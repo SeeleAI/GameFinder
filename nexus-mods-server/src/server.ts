@@ -1,6 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v4";
+import type { NexusBrowserAutomation } from "./browser/browser-service.js";
+import { NexusBrowserService } from "./browser/browser-service.js";
+import { BrowserDownloadManager } from "./browser-download-manager.js";
 import { DownloadManager, selectDownloadFile } from "./download-manager.js";
 import { asNexusError, NexusError } from "./errors.js";
 import { NexusClient } from "./nexus-client.js";
@@ -62,13 +65,18 @@ export interface NexusMcpService {
   close: () => Promise<void>;
 }
 
-export function createNexusMcpServer(client = new NexusClient()): NexusMcpService {
+export function createNexusMcpServer(
+  client = new NexusClient(),
+  browser: NexusBrowserAutomation = new NexusBrowserService()
+): NexusMcpService {
   const downloads = new DownloadManager(client);
+  const browserDownloads = new BrowserDownloadManager(browser);
+  const sessionBackends = new Map<string, "native" | "persistent_chromium">();
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, mod discovery, rankings, metrics, files, changelogs, requirements, and authorized downloads. Require canonical Nexus URLs. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys or temporary NXM download authorization. Use research tools as read-only evidence, and use download tools only after explicit user intent."
+        "Use this server first for Nexus game identity, mod discovery, rankings, metrics, files, changelogs, requirements, and authorized downloads. Require canonical Nexus URLs. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Use research tools as read-only evidence, and use browser or download tools only after explicit user intent. The dedicated Chromium login tool opens a local persistent profile but never accepts account credentials. Native remains the default download backend; persistent_chromium downloads use prepare_download, start_download, get_download_status, and cancel_download."
     }
   );
 
@@ -86,6 +94,68 @@ export function createNexusMcpServer(client = new NexusClient()): NexusMcpServic
         server: { name: SERVER_NAME, version: SERVER_VERSION },
         apiKeyConfigured: client.configured,
         meta: meta("local", null)
+      })
+  );
+
+  server.registerTool(
+    "browser_status",
+    {
+      title: "Dedicated Nexus Chromium status",
+      description:
+        "Check whether the Playwright Chromium engine and dedicated persistent profile are available, whether the browser is running, and the last observed Nexus login state. Does not expose the profile path, cookies, or account identity.",
+      inputSchema: {},
+      annotations: readOnlyAnnotations
+    },
+    async () =>
+      safe(async () => {
+        const status = await browser.status();
+        const summary = status.running
+          ? `Dedicated Nexus Chromium is running; login state is ${status.authState}.`
+          : `Dedicated Nexus Chromium is stopped; engine installed: ${status.engineInstalled}.`;
+        return ok(summary, {
+          ok: true,
+          browser: status,
+          meta: meta("local", null)
+        });
+      })
+  );
+
+  server.registerTool(
+    "open_nexus_login",
+    {
+      title: "Open dedicated Nexus login",
+      description:
+        "Start the visible dedicated persistent Chromium profile and open the normal Nexus login flow. The user enters credentials, 2FA, or CAPTCHA directly in Chromium; this tool never accepts or returns them.",
+      inputSchema: {
+        returnToModUrl: z
+          .string()
+          .url()
+          .optional()
+          .describe("Optional canonical Nexus Mod URL to open after login is observed.")
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true
+      }
+    },
+    async ({ returnToModUrl }) =>
+      safe(async () => {
+        const canonicalReturnUrl =
+          returnToModUrl === undefined ? undefined : parseModRef(returnToModUrl).canonicalUrl;
+        const login = await browser.openLogin(canonicalReturnUrl);
+        const summary =
+          login.state === "authenticated"
+            ? "The dedicated Nexus Chromium profile is already authenticated."
+            : "The dedicated Nexus Chromium is open. Complete login in that browser, then call browser_status.";
+        return ok(summary, {
+          ok: true,
+          login,
+          meta: meta("local", null, [
+            "Enter credentials, 2FA, and CAPTCHA only in the visible Nexus browser page, never as MCP arguments."
+          ])
+        });
       })
   );
 
@@ -324,10 +394,11 @@ export function createNexusMcpServer(client = new NexusClient()): NexusMcpServic
     {
       title: "Prepare one Nexus mod download",
       description:
-        "Prepare an explicitly requested single-mod download from a canonical Nexus Mod URL. Selects the requested fileId or the latest active MAIN file. For non-Premium accounts, starts a loopback-only authorization page that accepts the temporary NXM link without exposing it to the model.",
+        "Prepare an explicitly requested single-mod download from a canonical Nexus Mod URL. Selects the requested fileId or latest active MAIN file. backend defaults to native; persistent_chromium prepares an asynchronous browser session without starting page clicks.",
       inputSchema: {
         modUrl: z.string().url(),
-        fileId: z.number().int().positive().optional()
+        fileId: z.number().int().positive().optional(),
+        backend: z.enum(["native", "persistent_chromium"]).default("native")
       },
       annotations: {
         readOnlyHint: false,
@@ -336,35 +407,52 @@ export function createNexusMcpServer(client = new NexusClient()): NexusMcpServic
         openWorldHint: true
       }
     },
-    async ({ modUrl, fileId }) =>
+    async ({ modUrl, fileId, backend }) =>
       safe(async () => {
         const ref = parseModRef(modUrl);
-        const [{ mod }, { files }, validation] = await Promise.all([
+        const [{ mod }, { files }] = await Promise.all([
           client.getMod(ref.domainName, ref.modId),
-          client.getModFiles(ref.domainName, ref.modId),
-          client.validateCredentials()
+          client.getModFiles(ref.domainName, ref.modId)
         ]);
         if (!mod.available || mod.status.toLowerCase() !== "published") {
           throw new NexusError("INVALID_INPUT", `Mod ${ref.modId} is not currently published and available.`);
         }
         const file = selectDownloadFile(files, fileId);
-        const prepared = await downloads.prepare({
-          domainName: ref.domainName,
-          modId: ref.modId,
-          canonicalUrl: ref.canonicalUrl,
-          file,
-          isPremium: validation.isPremium
-        });
-        const summary = prepared.authorizationPageUrl
-          ? `Prepared ${file.fileName}. Open the local authorization page, submit the matching NXM link, then call get_download_status.`
-          : `Prepared ${file.fileName}; the Premium account can request a download link without interactive NXM authorization.`;
+        const prepared =
+          backend === "persistent_chromium"
+            ? browserDownloads.prepare({
+                domainName: ref.domainName,
+                modId: ref.modId,
+                canonicalUrl: ref.canonicalUrl,
+                file
+              })
+            : await (async () => {
+                const validation = await client.validateCredentials();
+                return downloads.prepare({
+                  domainName: ref.domainName,
+                  modId: ref.modId,
+                  canonicalUrl: ref.canonicalUrl,
+                  file,
+                  isPremium: validation.isPremium
+                });
+              })();
+        sessionBackends.set(prepared.sessionId, backend);
+        const summary =
+          backend === "persistent_chromium"
+            ? `Prepared ${file.fileName} for the persistent Chromium backend. Call start_download with an absolute output directory.`
+            : prepared.authorizationPageUrl
+              ? `Prepared ${file.fileName}. Open the local authorization page, submit the matching NXM link, then call get_download_status.`
+              : `Prepared ${file.fileName}; the Premium account can request a download link without interactive NXM authorization.`;
         return ok(summary, {
           ok: true,
           download: prepared,
           meta: meta("nexus-rest-v1", client.lastQuota, [
             "Preparing a download does not download, execute, extract, or install the archive.",
-            ...(prepared.authorizationPageUrl
+            ...(backend === "native" && prepared.authorizationPageUrl
               ? ["Temporary NXM authorization must be submitted only to the loopback page, never as an MCP argument or chat message."]
+              : []),
+            ...(backend === "persistent_chromium"
+              ? ["The browser workflow remains idle until start_download is called explicitly."]
               : [])
           ])
         });
@@ -382,8 +470,82 @@ export function createNexusMcpServer(client = new NexusClient()): NexusMcpServic
     },
     async ({ sessionId }) =>
       safe(async () => {
-        const status = downloads.status(sessionId);
+        const backend = sessionBackends.get(sessionId);
+        if (!backend) throw new NexusError("NOT_FOUND", "Download session was not found.");
+        const status =
+          backend === "persistent_chromium"
+            ? browserDownloads.status(sessionId)
+            : downloads.status(sessionId);
         return ok(`Download session is ${status.state}.`, {
+          ok: true,
+          download: status,
+          meta: meta("local", client.lastQuota)
+        });
+      })
+  );
+
+  server.registerTool(
+    "start_download",
+    {
+      title: "Start one prepared browser download",
+      description:
+        "Start a prepared persistent_chromium session as an asynchronous visible-browser workflow. Returns quickly; poll get_download_status for interaction, verification, completion, or failure.",
+      inputSchema: {
+        sessionId: z.string().uuid(),
+        outputDirectory: z.string().min(3).describe("Absolute directory for the archive, staging data, and receipt.")
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true
+      }
+    },
+    async ({ sessionId, outputDirectory }) =>
+      safe(async () => {
+        const backend = sessionBackends.get(sessionId);
+        if (!backend) throw new NexusError("NOT_FOUND", "Download session was not found.");
+        if (backend !== "persistent_chromium") {
+          throw new NexusError(
+            "INVALID_INPUT",
+            "start_download is only for persistent_chromium sessions; use download_mod_file for native sessions."
+          );
+        }
+        const status = await browserDownloads.start(sessionId, outputDirectory);
+        return ok(`Persistent Chromium download session started with state ${status.state}.`, {
+          ok: true,
+          download: status,
+          meta: meta("local", client.lastQuota, [
+            "Poll get_download_status; inspect the visible Chromium window only when requiresUserInteraction is true.",
+            "The archive will not be extracted, executed, or installed."
+          ])
+        });
+      })
+  );
+
+  server.registerTool(
+    "cancel_download",
+    {
+      title: "Cancel one browser download",
+      description:
+        "Cancel a prepared or active persistent_chromium download session. Does not close the shared browser Profile and does not affect completed native downloads.",
+      inputSchema: { sessionId: z.string().uuid() },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async ({ sessionId }) =>
+      safe(async () => {
+        const backend = sessionBackends.get(sessionId);
+        if (!backend) throw new NexusError("NOT_FOUND", "Download session was not found.");
+        if (backend !== "persistent_chromium") {
+          throw new NexusError("INVALID_INPUT", "cancel_download is only for persistent_chromium sessions.");
+        }
+        const status = await browserDownloads.cancel(sessionId);
+        return ok(`Persistent Chromium download session is ${status.state}.`, {
           ok: true,
           download: status,
           meta: meta("local", client.lastQuota)
@@ -410,6 +572,14 @@ export function createNexusMcpServer(client = new NexusClient()): NexusMcpServic
     },
     async ({ sessionId, outputDirectory }) =>
       safe(async () => {
+        const backend = sessionBackends.get(sessionId);
+        if (!backend) throw new NexusError("NOT_FOUND", "Download session was not found.");
+        if (backend === "persistent_chromium") {
+          throw new NexusError(
+            "INVALID_INPUT",
+            "Use start_download and get_download_status for persistent_chromium sessions."
+          );
+        }
         const receipt = await downloads.download(sessionId, outputDirectory);
         return ok(`Downloaded ${receipt.fileName} (${receipt.bytes} bytes) and verified SHA-256 ${receipt.sha256}.`, {
           ok: true,
@@ -422,8 +592,20 @@ export function createNexusMcpServer(client = new NexusClient()): NexusMcpServic
   return {
     server,
     close: async () => {
-      await downloads.close();
-      await server.close();
+      try {
+        await browserDownloads.close();
+      } finally {
+        try {
+          await browser.close();
+        } finally {
+          try {
+            await downloads.close();
+          } finally {
+            sessionBackends.clear();
+            await server.close();
+          }
+        }
+      }
     }
   };
 }

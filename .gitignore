@@ -9,3 +9,5 @@ coverage/
 .codex-work/acceptance-research/
 .codex-work/skill-validator-deps/
 nexus-mods-server/.runtime/
+nexus-browser-profile/
+.nexus-download-staging/

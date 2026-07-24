@@ -1,8 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { access, link, mkdir, open, rm, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { open, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import path from "node:path";
+import {
+  createStagingPath,
+  finalizeDownloadedFile,
+  type DownloadReceipt
+} from "./download-verifier.js";
 import { NexusError } from "./errors.js";
 import { NexusClient } from "./nexus-client.js";
 import type { NexusModFile } from "./types.js";
@@ -27,6 +30,7 @@ interface DownloadSession {
 
 export interface PreparedDownload {
   sessionId: string;
+  backend: "native";
   state: DownloadSession["state"];
   mod: {
     domainName: string;
@@ -43,23 +47,7 @@ export interface PreparedDownload {
   expiresAt: string;
 }
 
-export interface DownloadReceipt {
-  canonicalModUrl: string;
-  domainName: string;
-  modId: number;
-  fileId: number;
-  fileName: string;
-  bytes: number;
-  sha256: string;
-  completedAt: string;
-  targetPath: string;
-  receiptPath: string;
-  archiveCheck: {
-    format: string;
-    valid: boolean | null;
-    detail: string;
-  };
-}
+export type { DownloadReceipt } from "./download-verifier.js";
 
 function escapeHtml(value: string): string {
   return value
@@ -68,12 +56,6 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
-}
-
-function safeFileName(value: string): string {
-  const cleaned = value.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").replace(/[. ]+$/g, "").trim();
-  if (!cleaned || cleaned === "." || cleaned === "..") return "nexus-mod-file";
-  return cleaned.slice(0, 220);
 }
 
 function parseNxmAuthorization(value: string, session: DownloadSession): NxmAuthorization {
@@ -126,46 +108,6 @@ function html(response: ServerResponse, status: number, body: string): void {
     "x-content-type-options": "nosniff"
   });
   response.end(`<!doctype html><html><head><meta charset="utf-8"><title>Nexus download authorization</title><style>body{font:16px system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;line-height:1.5}input{width:100%;padding:.7rem;box-sizing:border-box}button{margin-top:1rem;padding:.6rem 1rem}code{overflow-wrap:anywhere}</style></head><body>${body}</body></html>`);
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function inspectArchive(filePath: string, fileName: string, bytes: number): Promise<DownloadReceipt["archiveCheck"]> {
-  const extension = path.extname(fileName).toLowerCase();
-  const handle = await open(filePath, "r");
-  try {
-    const magic = Buffer.alloc(Math.min(8, bytes));
-    await handle.read(magic, 0, magic.length, 0);
-    if (extension === ".zip" || magic.subarray(0, 2).equals(Buffer.from([0x50, 0x4b]))) {
-      const tailLength = Math.min(bytes, 65_557);
-      const tail = Buffer.alloc(tailLength);
-      await handle.read(tail, 0, tailLength, bytes - tailLength);
-      const eocd = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
-      return tail.lastIndexOf(eocd) >= 0
-        ? { format: "zip", valid: true, detail: "ZIP end-of-central-directory record found." }
-        : { format: "zip", valid: false, detail: "ZIP end-of-central-directory record was not found." };
-    }
-    if (extension === ".7z" && magic.subarray(0, 6).equals(Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]))) {
-      return { format: "7z", valid: null, detail: "7z magic matched; deep archive validation is not enabled." };
-    }
-    if (extension === ".rar" && magic.subarray(0, 4).equals(Buffer.from([0x52, 0x61, 0x72, 0x21]))) {
-      return { format: "rar", valid: null, detail: "RAR magic matched; deep archive validation is not enabled." };
-    }
-    return {
-      format: extension.replace(/^\./, "") || "unknown",
-      valid: null,
-      detail: `Archive parser unavailable; leading magic is ${magic.toString("hex")}.`
-    };
-  } finally {
-    await handle.close();
-  }
 }
 
 export function selectDownloadFile(files: NexusModFile[], requestedFileId?: number): NexusModFile {
@@ -279,6 +221,7 @@ export class DownloadManager {
     const port = input.isPremium ? undefined : await this.#ensureAuthorizationServer();
     return {
       sessionId: id,
+      backend: "native",
       state: session.state,
       mod: { domainName: input.domainName, modId: input.modId, canonicalUrl: input.canonicalUrl },
       file: input.file,
@@ -301,6 +244,7 @@ export class DownloadManager {
     }
     return {
       sessionId,
+      backend: "native",
       state: session.state,
       mod: { domainName: session.domainName, modId: session.modId, canonicalUrl: session.canonicalUrl },
       file: session.file,
@@ -315,9 +259,6 @@ export class DownloadManager {
   async download(sessionId: string, outputDirectory: string): Promise<DownloadReceipt> {
     const session = this.#sessions.get(sessionId);
     if (!session) throw new NexusError("NOT_FOUND", "Download session was not found.");
-    if (!path.isAbsolute(outputDirectory)) {
-      throw new NexusError("INVALID_INPUT", "outputDirectory must be an absolute path.");
-    }
     if (session.expiresAt <= Date.now()) {
       session.authorization = undefined;
       throw new NexusError("DOWNLOAD_AUTH_EXPIRED", "Download session expired. Prepare it again.");
@@ -329,16 +270,11 @@ export class DownloadManager {
       throw new NexusError("INVALID_INPUT", `Download session is ${session.state}, not ready.`);
     }
 
-    const resolvedDirectory = path.resolve(outputDirectory);
-    if (path.parse(resolvedDirectory).root === resolvedDirectory) {
-      throw new NexusError("INVALID_INPUT", "Refusing to use a filesystem root as outputDirectory.");
-    }
-    await mkdir(resolvedDirectory, { recursive: true });
-    const fileName = safeFileName(session.file.fileName);
-    const finalPath = path.join(resolvedDirectory, fileName);
-    if (await fileExists(finalPath)) {
-      throw new NexusError("OUTPUT_EXISTS", `Output file already exists: ${finalPath}`);
-    }
+    const staging = await createStagingPath({
+      outputDirectory,
+      sessionId,
+      preferredFileName: session.file.fileName
+    });
 
     session.state = "downloading";
     let links;
@@ -366,14 +302,11 @@ export class DownloadManager {
       throw new NexusError("DOWNLOAD_FAILED", "Nexus returned a download host outside the allowed nexus-cdn.com boundary.");
     }
 
-    const tempPath = path.join(resolvedDirectory, `.${fileName}.${randomUUID()}.part`);
+    const tempPath = staging.stagingPath;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30 * 60_000);
     let handle;
     let bytes = 0;
-    let finalExposed = false;
-    const hash = createHash("sha256");
-    let archiveCheck: DownloadReceipt["archiveCheck"];
     try {
       handle = await open(tempPath, "wx");
       const response = await fetch(parsedDownloadUrl, { redirect: "follow", signal: controller.signal });
@@ -396,7 +329,6 @@ export class DownloadManager {
         const chunk = await reader.read();
         if (chunk.done) break;
         if (!chunk.value) continue;
-        hash.update(chunk.value);
         let offset = 0;
         while (offset < chunk.value.byteLength) {
           const writeResult = await handle.write(chunk.value, offset, chunk.value.byteLength - offset);
@@ -413,51 +345,28 @@ export class DownloadManager {
 
       const contentLength = Number(response.headers.get("content-length"));
       if (Number.isFinite(contentLength) && contentLength > 0 && bytes !== contentLength) {
-        throw new NexusError("DOWNLOAD_FAILED", `Downloaded ${bytes} bytes but HTTP declared ${contentLength}.`);
-      }
-      if (session.file.sizeInBytes !== null && session.file.sizeInBytes > 0 && bytes !== session.file.sizeInBytes) {
         throw new NexusError(
-          "DOWNLOAD_FAILED",
-          `Downloaded ${bytes} bytes but Nexus file metadata declares ${session.file.sizeInBytes}.`
+          "DOWNLOAD_SIZE_MISMATCH",
+          `Downloaded ${bytes} bytes but HTTP declared ${contentLength}.`
         );
       }
-      archiveCheck = await inspectArchive(tempPath, fileName, bytes);
-      if (archiveCheck.valid === false) {
-        throw new NexusError("DOWNLOAD_FAILED", archiveCheck.detail);
-      }
-      await link(tempPath, finalPath);
-      finalExposed = true;
-      await unlink(tempPath);
-      const completedAt = new Date().toISOString();
-      const receiptPath = `${finalPath}.nexus-receipt.json`;
-      const receipt: DownloadReceipt = {
+      const receipt = await finalizeDownloadedFile({
+        backend: "native",
         canonicalModUrl: session.canonicalUrl,
         domainName: session.domainName,
         modId: session.modId,
         fileId: session.file.fileId,
-        fileName,
-        bytes,
-        sha256: hash.digest("hex"),
-        completedAt,
-        targetPath: finalPath,
-        receiptPath,
-        archiveCheck
-      };
-      try {
-        await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-      } catch (error) {
-        await rm(finalPath, { force: true });
-        throw new NexusError("DOWNLOAD_FAILED", "Downloaded archive was removed because its receipt could not be written.", {
-          cause: error
-        });
-      }
+        expectedSizeInBytes: session.file.sizeInBytes,
+        outputDirectory: staging.outputDirectory,
+        stagingPath: tempPath,
+        apiFileName: session.file.fileName
+      });
       session.state = "completed";
       return receipt;
     } catch (error) {
       session.state = "failed";
       if (handle) await handle.close().catch(() => undefined);
       await rm(tempPath, { force: true }).catch(() => undefined);
-      if (finalExposed) await rm(finalPath, { force: true }).catch(() => undefined);
       if (error instanceof NexusError) throw error;
       if (error instanceof Error && error.name === "AbortError") {
         throw new NexusError("DOWNLOAD_FAILED", "Nexus download timed out.", { retryable: true, cause: error });

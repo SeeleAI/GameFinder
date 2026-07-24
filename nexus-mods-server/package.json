@@ -20,6 +20,12 @@
     "acceptance:download": "tsx scripts/acceptance-download.ts",
     "acceptance:browser-login": "tsx scripts/acceptance-browser-login.ts",
     "acceptance:browser-login-persistence": "tsx scripts/acceptance-browser-login-persistence.ts",
+    "acceptance:browser-download": "tsx scripts/acceptance-browser-download.ts",
+    "acceptance:browser-profile-busy": "tsx scripts/acceptance-browser-profile-busy.ts",
+    "acceptance:browser-cdp-probe": "tsx scripts/acceptance-browser-cdp-probe.ts",
+    "acceptance:browser-cdp-clearance": "tsx scripts/acceptance-browser-cdp-clearance.ts",
+    "acceptance:browser-cdp-download": "pnpm build && node dist/acceptance-browser-cdp-download.js",
+    "acceptance:browser-cdp-dom": "pnpm build && node dist/acceptance-browser-cdp-dom-diagnostic.js",
     "setup:browser": "playwright install --no-shell chromium",
     "browser:list": "playwright install --list"
   },

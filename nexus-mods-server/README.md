@@ -152,6 +152,29 @@ pnpm acceptance:browser-login-persistence
 
 PC-2 reopens the protected Nexus page from a new browser service instance and passes only if the stored Profile is still authenticated.
 
+For the explicit Phase 5 real-download acceptance target, build the server and enable the live-test guard:
+
+```powershell
+pnpm build
+$env:NEXUS_LIVE_TEST="1"
+pnpm acceptance:browser-download
+Remove-Item Env:NEXUS_LIVE_TEST
+```
+
+This runner downloads only Elden Ring Mod 9531 / File 47215 through the persistent Chromium backend. It validates the recorded 1,474,885-byte size and SHA-256 baseline, preserves the archive and receipt under a run-specific `.codex-work` directory, and never extracts or installs it. If Nexus shows login, 2FA, CAPTCHA, or another normal confirmation, complete it in the visible Chromium window and leave the runner active. The runner keeps that page stable and prints a `resume-after-interaction.flag` path; create the empty signal file only after the visible interaction is complete.
+
+Phase 5 found that Nexus/Cloudflare rejects Chromium launched through Playwright `launchPersistentContext`, even in visible mode. The successful experimental path launches Chromium as an ordinary process with a fixed loopback CDP endpoint and attaches afterward:
+
+```powershell
+$env:NEXUS_LIVE_TEST="1"
+pnpm acceptance:browser-cdp-probe
+pnpm acceptance:browser-cdp-clearance
+pnpm acceptance:browser-cdp-download
+Remove-Item Env:NEXUS_LIVE_TEST
+```
+
+The exact PC-3 target passed through this runner with the expected 1,474,885 bytes, SHA-256, and ZIP integrity. This experimental manager is not yet wired into the MCP tools; `persistent_chromium` still uses the Phase 4 Playwright-launch backend, and `native` remains the default.
+
 ## Persistent Chromium download workflow
 
 The browser backend is explicit opt-in. Native/NXM remains the default when `backend` is omitted.

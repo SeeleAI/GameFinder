@@ -131,16 +131,17 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
       this.#transition("locating_file");
       await this.#waitForFileSignal(input);
       await this.#assertPageCanContinue(await classifyNexusPage(this.#page));
-      const fileScope = await this.#locateFileScope(input);
-      const manual = await this.#requireUniqueAction(
-        manualDownloadAction(fileScope),
-        "FILE_ROW_AMBIGUOUS",
-        "The target file does not have one unique Manual Download action."
-      );
-
       this.#startDownloadObserver();
       this.#transition("waiting_download_option");
-      await this.#clickAction(manual, "The target Manual Download action could not be used.");
+      if (!(await this.#hasDirectDownloadOption())) {
+        const fileScope = await this.#locateFileScope(input);
+        const manual = await this.#requireUniqueAction(
+          manualDownloadAction(fileScope),
+          "FILE_ROW_AMBIGUOUS",
+          "The target file does not have one unique Manual Download action."
+        );
+        await this.#clickAction(manual, "The target Manual Download action could not be used.");
+      }
 
       for (let step = 0; step < 8; step += 1) {
         const observedDownload = await this.#waitForDecision();
@@ -259,41 +260,55 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
 
   async #waitForFileSignal(input: BrowserPageDownloadInput): Promise<void> {
     try {
-      await this.#withCancellation(
-        this.#page.waitForFunction(
-          ({ fileId, fileName }) => {
-            const id = String(fileId);
-            if (
-              document.querySelector(
-                `[data-fileid="${CSS.escape(id)}"], [data-file-id="${CSS.escape(id)}"], [data-id="${CSS.escape(id)}"]`
-              )
-            ) {
-              return true;
-            }
-            const links = Array.from(document.querySelectorAll("a[href]"));
-            if (
-              links.some((link) => {
-                const href = link.getAttribute("href") ?? "";
-                return href.includes(`file_id=${id}`) || href.includes(`/files/${id}`);
-              })
-            ) {
-              return true;
-            }
-            if (fileName && (document.body?.innerText ?? "").includes(fileName)) return true;
-            const current = new URL(location.href);
-            const preciseFile = current.searchParams.get("file_id") === id;
-            const manual = Array.from(document.querySelectorAll("button, a, [role='button']")).some((element) =>
-              /\bmanual\s+download\b/i.test(element.textContent ?? "")
-            );
-            return preciseFile && manual;
-          },
-          { fileId: input.fileId, fileName: input.fileName },
-          { timeout: this.#config.navigationTimeoutMs }
+      const locatorSignals: Locator[] = [
+        ...fileContainerSelectors(input.fileId).map((selector) => this.#page.locator(selector)),
+        this.#page.locator(fileReferenceSelector(input.fileId)),
+        manualDownloadAction(this.#page),
+        standardDownloadAction(this.#page),
+        slowDownloadAction(this.#page),
+        resumableDownloadAction(this.#page)
+      ];
+      const shadowAwareSignal = Promise.any(
+        locatorSignals.map((locator) =>
+          locator.first().waitFor({
+            state: "visible",
+            timeout: this.#config.navigationTimeoutMs
+          })
         )
+      );
+      await this.#withCancellation(
+        Promise.any([
+          shadowAwareSignal,
+          this.#page.waitForFunction(
+            ({ fileId, fileName }) => {
+              const id = String(fileId);
+              if (
+                document.querySelector(
+                  `[data-fileid="${CSS.escape(id)}"], [data-file-id="${CSS.escape(id)}"], [data-id="${CSS.escape(id)}"]`
+                )
+              ) {
+                return true;
+              }
+              const links = Array.from(document.querySelectorAll("a[href]"));
+              if (
+                links.some((link) => {
+                  const href = link.getAttribute("href") ?? "";
+                  return href.includes(`file_id=${id}`) || href.includes(`/files/${id}`);
+                })
+              ) {
+                return true;
+              }
+              if (fileName && (document.body?.innerText ?? "").includes(fileName)) return true;
+              return false;
+            },
+            { fileId: input.fileId, fileName: input.fileName },
+            { timeout: this.#config.navigationTimeoutMs }
+          )
+        ])
       );
     } catch (error) {
       if (error instanceof NexusError) throw error;
-      if (isPlaywrightTimeout(error)) {
+      if (isPlaywrightTimeout(error) || error instanceof AggregateError) {
         const classification = await classifyNexusPage(this.#page);
         await this.#assertPageCanContinue(classification);
         throw new NexusError("FILE_ROW_NOT_FOUND", `Nexus fileId ${input.fileId} was not found on the files page.`, {
@@ -302,6 +317,15 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
       }
       throw error;
     }
+  }
+
+  async #hasDirectDownloadOption(): Promise<boolean> {
+    const counts = await Promise.all([
+      standardDownloadAction(this.#page).count(),
+      slowDownloadAction(this.#page).count(),
+      resumableDownloadAction(this.#page).count()
+    ]);
+    return counts.some((count) => count > 0);
   }
 
   async #locateFileScope(input: BrowserPageDownloadInput): Promise<NexusLocatorScope> {
@@ -436,6 +460,19 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
           { timeout: this.#config.downloadStartTimeoutMs }
         )
         .then(() => ({ kind: "decision" as const }));
+      const locatorDecision = Promise.any(
+        [
+          standardDownloadAction(this.#page),
+          slowDownloadAction(this.#page),
+          resumableDownloadAction(this.#page),
+          requirementsContinueAction(this.#page)
+        ].map((locator) =>
+          locator.first().waitFor({
+            state: "visible",
+            timeout: this.#config.downloadStartTimeoutMs
+          })
+        )
+      ).then(() => ({ kind: "decision" as const }));
       const download = this.#requireDownloadPromise().then((value) => ({
         kind: "download" as const,
         download: value
@@ -443,7 +480,8 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
       const outcome = await this.#withCancellation(
         Promise.race([
           download,
-          decision
+          decision,
+          locatorDecision
         ])
       );
       return outcome.kind === "download" ? outcome.download : null;

@@ -87,6 +87,34 @@ function fixtureHtml(options: {
     </html>`;
 }
 
+function shadowDirectSlowFixtureHtml(): string {
+  return `<!doctype html>
+    <html>
+      <head><title>Local Nexus Shadow DOM download fixture</title></head>
+      <body>
+        <mod-file-download></mod-file-download>
+        <script>
+          function triggerFixtureDownload() {
+            const blob = new Blob(["shadow fixture archive bytes"], { type: "application/octet-stream" });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = "shadow-fixture-mod.zip";
+            document.body.appendChild(link);
+            link.click();
+          }
+          customElements.define("mod-file-download", class extends HTMLElement {
+            connectedCallback() {
+              const root = this.attachShadow({ mode: "open" });
+              root.innerHTML =
+                '<div id="download-section"><span>ErdGameTools 20260607</span><button type="button">Slow Download</button></div>';
+              root.querySelector("button").addEventListener("click", triggerFixtureDownload);
+            }
+          });
+        </script>
+      </body>
+    </html>`;
+}
+
 async function routeFixture(page: Page, html: string): Promise<void> {
   await page.route("https://www.nexusmods.com/**", async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html });
@@ -238,6 +266,33 @@ describe.skipIf(!enabled)("Nexus browser download HTML fixture", () => {
       });
       expect(result.state).toBe("verifying");
       expect(await readFile(stagingPath, "utf8")).toBe("fixture archive bytes");
+    } finally {
+      await page.close();
+    }
+  });
+
+  it("recognizes a direct Slow Download action inside the real-site Shadow DOM shape", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "nexus-browser-shadow-direct-"));
+    temporaryDirectories.push(directory);
+    const stagingPath = path.join(directory, "fixture.part");
+    const page = await browser.newPage({ acceptDownloads: true });
+    await routeFixture(page, shadowDirectSlowFixtureHtml());
+    const controller = new NexusDownloadPageController(page, config);
+
+    try {
+      const result = await controller.run({
+        domainName: "eldenring",
+        modId: 9531,
+        fileId: 47215,
+        fileName: "ErdGameTools 20260607-9531-1-3-1.zip",
+        saveAsPath: stagingPath
+      });
+      expect(result).toMatchObject({
+        state: "verifying",
+        suggestedFilename: "shadow-fixture-mod.zip",
+        savedPath: stagingPath
+      });
+      expect((await readFile(stagingPath, "utf8"))).toBe("shadow fixture archive bytes");
     } finally {
       await page.close();
     }

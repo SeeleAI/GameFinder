@@ -1,6 +1,6 @@
 # Nexus Mods 专用持久化 Chromium 下载后端开发计划
 
-> 状态：Phase 0–4 已实现并通过本地验收；Phase 5 真实 Nexus 下载验收尚未开始
+> 状态：Phase 0–4 已实现；Phase 5 PC-3 已通过 ordinary Chromium + CDP runner，MCP 后端切换尚未实施
 > 编写日期：2026-07-24
 > 目标项目：`nexus-mods-server`
 > 目标运行环境：Windows、本地单用户、STDIO MCP、Node.js 20+
@@ -27,7 +27,10 @@
 - browser/native 已共用 `download-verifier.ts`：统一验证预期字节数、SHA-256、ZIP/7z/RAR 基础完整性、文件名、最终路径和 no-overwrite receipt。
 - 浏览器长任务在 MCP 进程内后台执行；MCP 协议测试已覆盖 `prepare → start → status → completed`，Manager 测试已覆盖 CAPTCHA 人工接管、取消和单活跃任务约束。
 - Phase 4 自动化验收通过：TypeScript 校验、59 项 Vitest（48 通过、11 个显式 opt-in 跳过）以及共享校验器和 MCP 链路测试均通过。
-- 本阶段没有执行真实 Mod 下载，也没有实现 Mod 安装。
+- Phase 5 发现 Playwright `launchPersistentContext` 会触发 Cloudflare challenge loop；ordinary Chromium 固定 CDP 端口方案保持 `navigator.webdriver=false`。
+- PC-3 已通过 ordinary Chromium CDP runner：File 47215 下载为 `1,474,885` bytes，SHA-256 为 `f3e339ea655b5eba4173f401005baef68506fa125de0b823dd27a733f94e4abd`，ZIP 检查通过。
+- 真实页面使用 `mod-file-download` Shadow DOM 并直接提供 Slow Download；控制器已增加 Shadow-DOM-aware 信号等待和直接下载选项支持。
+- 本阶段没有执行 Mod 安装；生产 MCP browser backend 尚未从 `launchPersistentContext` 切换到 ordinary Chromium CDP manager。
 
 可复现命令和环境变量见项目 [`README.md`](../nexus-mods-server/README.md)。
 

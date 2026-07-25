@@ -209,6 +209,8 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
         } else if (
           [
             "CAPTCHA_REQUIRED",
+            "TWO_FACTOR_REQUIRED",
+            "COOKIE_CONSENT_REQUIRED",
             "ADULT_CONTENT_CONFIRMATION_REQUIRED",
             "USER_INTERACTION_REQUIRED",
             "RESUMABLE_DOWNLOAD_NOT_SUPPORTED"
@@ -670,7 +672,13 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
   async #assertPageCanContinue(classification: NexusPageClassification): Promise<void> {
     const details = {
       pageKind: classification.kind,
-      requiresUserInteraction: ["captcha", "adult_content", "access_denied"].includes(classification.kind)
+      requiresUserInteraction: [
+        "captcha",
+        "two_factor",
+        "adult_content",
+        "cookie_consent",
+        "access_denied"
+      ].includes(classification.kind)
     };
     switch (classification.kind) {
       case "captcha":
@@ -678,10 +686,22 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
           retryable: true,
           details
         });
+      case "two_factor":
+        throw new NexusError(
+          "TWO_FACTOR_REQUIRED",
+          "Complete Nexus two-factor authentication in the visible Chromium window.",
+          { retryable: true, details }
+        );
       case "adult_content":
         throw new NexusError(
           "ADULT_CONTENT_CONFIRMATION_REQUIRED",
           "Update the Nexus adult-content preference in the visible Chromium window.",
+          { retryable: true, details }
+        );
+      case "cookie_consent":
+        throw new NexusError(
+          "COOKIE_CONSENT_REQUIRED",
+          "Complete the Nexus cookie-consent choice in the visible Chromium window.",
           { retryable: true, details }
         );
       case "rate_limited":

@@ -1,6 +1,6 @@
 # Nexus Mods 专用持久化 Chromium 下载后端开发计划
 
-> 状态：Phase 0–4 已实现；Phase 5 PC-3 已通过 ordinary Chromium + CDP runner 与生产 MCP 三步链路
+> 状态：Phase 0–5 已完成；PC-1 至 PC-6 均有验收记录，下一阶段为 Phase 6 Skill 与默认后端决策
 > 编写日期：2026-07-24
 > 目标项目：`nexus-mods-server`
 > 目标运行环境：Windows、本地单用户、STDIO MCP、Node.js 20+
@@ -32,6 +32,8 @@
 - 真实页面使用 `mod-file-download` Shadow DOM 并直接提供 Slow Download；控制器已增加 Shadow-DOM-aware 信号等待和直接下载选项支持。
 - 生产 MCP browser backend 已切换到 `OrdinaryCdpBrowserManager`：`start_download` 先让普通 Chromium 打开精确 File URL，再延迟附加 CDP。
 - 生产 STDIO MCP `prepare_download → start_download → get_download_status` 已对 Mod 9531 / File 47215 验收通过，结果与 PC-3 基线一致。
+- PC-4 已使用独立一次性真实 Profile 通过：下载会话与 `browser_status` 均返回 `login_required`，同一 session 可再次启动，主 Profile 未触碰。
+- PC-5 已通过受控 Chromium 页面与 Manager 恢复矩阵：CAPTCHA、2FA、成人内容和 Cookie consent 映射为明确人工接管；维护和限流映射为可重试技术失败。
 - 本阶段没有执行 Mod 安装；`native` 仍为默认后端，`persistent_chromium` 仍需显式选择。
 
 可复现命令和环境变量见项目 [`README.md`](../nexus-mods-server/README.md)。

@@ -16,7 +16,9 @@ function signals(overrides: Partial<NexusPageSignals> = {}): NexusPageSignals {
     requirementsPrompt: false,
     downloadOption: false,
     captcha: false,
+    twoFactor: false,
     adultContent: false,
+    cookieConsent: false,
     rateLimited: false,
     maintenance: false,
     notFound: false,
@@ -28,12 +30,14 @@ function signals(overrides: Partial<NexusPageSignals> = {}): NexusPageSignals {
 describe("Nexus page classification", () => {
   it.each([
     ["captcha", { captcha: true, modFilesUrl: true }],
+    ["two_factor", { twoFactor: true }],
     ["rate_limited", { status: 429 }],
     ["maintenance", { status: 503 }],
     ["not_found", { status: 404 }],
     ["access_denied", { status: 403 }],
     ["login", { loginRequired: true }],
     ["adult_content", { adultContent: true }],
+    ["cookie_consent", { cookieConsent: true }],
     ["requirements", { requirementsPrompt: true }],
     ["download_options", { downloadOption: true }],
     ["mod_files", { modFilesUrl: true }],
@@ -44,5 +48,9 @@ describe("Nexus page classification", () => {
 
   it("treats a Cloudflare challenge as CAPTCHA before a nominal Mod files URL", () => {
     expect(classifyPageSignals(signals({ captcha: true, modFilesUrl: true, status: 403 }))).toBe("captcha");
+  });
+
+  it("treats blocking cookie consent as interaction before a logged-out navigation action", () => {
+    expect(classifyPageSignals(signals({ cookieConsent: true, loginRequired: true }))).toBe("cookie_consent");
   });
 });

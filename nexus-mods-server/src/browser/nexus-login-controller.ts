@@ -13,7 +13,13 @@ export type NexusAuthState =
   | "authenticated"
   | "authentication_failed";
 
-export type BrowserInteractionReason = "login" | "captcha" | "two_factor" | "unknown";
+export type BrowserInteractionReason =
+  | "login"
+  | "captcha"
+  | "two_factor"
+  | "adult_content"
+  | "cookie_consent"
+  | "unknown";
 
 export interface NexusLoginStatus {
   state: NexusAuthState;
@@ -69,10 +75,24 @@ async function readSignals(page: Page): Promise<PageSignals> {
       const action = (form.getAttribute("action") ?? "").toLowerCase();
       return action.includes("sign_in") || action.includes("login");
     });
+    const visibleLoginAction = Array.from(document.querySelectorAll("a[href], button")).some((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      if (style.display === "none" || style.visibility === "hidden" || rect.width === 0 || rect.height === 0) {
+        return false;
+      }
+      const text = ((element as HTMLElement).innerText ?? element.textContent ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      const href = element instanceof HTMLAnchorElement ? element.href.toLowerCase() : "";
+      return /^(?:log in|login|sign in)$/.test(text) && href.includes("users.nexusmods.com/auth/sign_in");
+    });
     return {
       hasPasswordField: document.querySelector('input[type="password"]') !== null,
       hasLoginForm: loginForms.length > 0,
       loginRequiredText:
+        visibleLoginAction ||
         bodyText.includes("you have to be logged in") ||
         bodyText.includes("you need to log in") ||
         bodyText.includes("please log in again") ||

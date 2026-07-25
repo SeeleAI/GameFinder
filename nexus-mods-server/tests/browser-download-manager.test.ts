@@ -141,29 +141,88 @@ describe("persistent Chromium download sessions", () => {
     expect(await readFile(completed.receipt?.receiptPath as string, "utf8")).not.toContain("cookie");
   });
 
-  it("surfaces CAPTCHA as resumable visible user interaction", async () => {
-    const browser = browserWithFactory(async (onState) => ({
-      state: "prepared",
-      run: async () => {
-        onState?.("navigating");
-        throw new NexusError("CAPTCHA_REQUIRED", "Complete browser verification.", { retryable: true });
-      },
-      cancel: async () => undefined
-    }));
+  it.each([
+    ["login", "LOGIN_REQUIRED", "login_required"],
+    ["captcha", "CAPTCHA_REQUIRED", "user_interaction_required"],
+    ["two_factor", "TWO_FACTOR_REQUIRED", "user_interaction_required"],
+    ["adult_content", "ADULT_CONTENT_CONFIRMATION_REQUIRED", "user_interaction_required"],
+    ["cookie_consent", "COOKIE_CONSENT_REQUIRED", "user_interaction_required"]
+  ] as const)("resumes the same session after %s interaction", async (reason, code, interactionState) => {
+    let attempt = 0;
+    const browser = browserWithFactory(async (onState) => {
+      attempt += 1;
+      return {
+        state: "prepared",
+        run: async (input) => {
+          onState?.("navigating");
+          if (attempt === 1) {
+            throw new NexusError(code, `Complete ${reason} interaction.`, { retryable: true });
+          }
+          onState?.("downloading");
+          await writeFile(input.saveAsPath, emptyZip);
+          return {
+            state: "verifying",
+            suggestedFilename: "resumed-fixture.zip",
+            savedPath: input.saveAsPath,
+            sourcePage: "/eldenring/mods/9531"
+          };
+        },
+        cancel: async () => undefined
+      };
+    });
     const manager = new BrowserDownloadManager(browser);
     managers.push(manager);
     const sessionId = prepare(manager);
-    const output = await mkdtemp(path.join(os.tmpdir(), "browser-download-captcha-"));
+    const output = await mkdtemp(path.join(os.tmpdir(), "browser-download-resume-"));
     temporaryDirectories.push(output);
 
     await manager.start(sessionId, output);
-    await waitForState(manager, sessionId, "user_interaction_required");
+    await waitForState(manager, sessionId, interactionState);
     expect(manager.status(sessionId)).toMatchObject({
       requiresUserInteraction: true,
-      interactionReason: "captcha",
-      error: { code: "CAPTCHA_REQUIRED", retryable: true }
+      interactionReason: reason,
+      error: { code, retryable: true },
+      finalPath: null
     });
+
+    await manager.start(sessionId, output);
+    await waitForState(manager, sessionId, "completed");
+    expect(manager.status(sessionId)).toMatchObject({
+      state: "completed",
+      requiresUserInteraction: false,
+      interactionReason: null,
+      error: null,
+      receipt: { fileName: "resumed-fixture.zip", bytes: emptyZip.length }
+    });
+    expect(attempt).toBe(2);
   });
+
+  it.each(["NEXUS_RATE_LIMITED", "NEXUS_MAINTENANCE"] as const)(
+    "keeps %s as a retryable technical failure, not user interaction",
+    async (code) => {
+      const browser = browserWithFactory(async () => ({
+        state: "prepared",
+        run: async () => {
+          throw new NexusError(code, "Temporary Nexus failure.", { retryable: true });
+        },
+        cancel: async () => undefined
+      }));
+      const manager = new BrowserDownloadManager(browser);
+      managers.push(manager);
+      const sessionId = prepare(manager);
+      const output = await mkdtemp(path.join(os.tmpdir(), "browser-download-technical-"));
+      temporaryDirectories.push(output);
+
+      await manager.start(sessionId, output);
+      await waitForState(manager, sessionId, "failed");
+      expect(manager.status(sessionId)).toMatchObject({
+        state: "failed",
+        requiresUserInteraction: false,
+        interactionReason: null,
+        error: { code, retryable: true }
+      });
+    }
+  );
 
   it("cancels a workflow before the Playwright download event", async () => {
     let rejectRun: ((error: NexusError) => void) | undefined;

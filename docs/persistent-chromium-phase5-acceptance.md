@@ -1,6 +1,6 @@
 # Persistent Chromium Phase 5 Acceptance Record
 
-Date: 2026-07-24
+Date: 2026-07-24; PC-4/PC-5 completed 2026-07-25
 
 Target:
 
@@ -47,6 +47,20 @@ pnpm acceptance:browser-download
 Remove-Item Env:NEXUS_LIVE_TEST
 ```
 
+PC-4 expired login with a disposable clean Profile:
+
+```powershell
+$env:NEXUS_LIVE_TEST="1"
+pnpm acceptance:browser-expired-login
+Remove-Item Env:NEXUS_LIVE_TEST
+```
+
+PC-5 controlled interaction and recovery matrix:
+
+```powershell
+pnpm acceptance:browser-interactions
+```
+
 When the runner reports `waiting_for_resume`, complete the visible browser interaction first. Then create the exact empty `resume-after-interaction.flag` path printed by the runner. The page is not reloaded while waiting for this signal.
 
 PC-6 real Profile lock:
@@ -68,11 +82,13 @@ $env:NEXUS_ACCEPTANCE_OUTPUT_DIR="D:\GameFinderAcceptance\EldenRing-9531-47215"
 | PC-1 first login | Previously passed | Dedicated Profile returned `authenticated`; credentials were entered only in Chromium. |
 | PC-2 login persistence | Passed 2026-07-24 | A fresh browser service reopened the Profile and returned `authenticated`. |
 | PC-3 real file download | Passed 2026-07-24 with ordinary Chromium CDP runner | Downloaded File 47215 without NXM or Vortex; bytes, SHA-256, ZIP integrity, final path, and receipt all matched the baseline. |
-| PC-4 expired login | Pending | Use a separate clean test Profile; do not clear the primary authenticated Profile. |
-| PC-5 user takeover | Partially passed 2026-07-24 | MCP correctly returned `user_interaction_required/captcha` and kept the page visible. Human checkbox completion still looped because Cloudflare treats Playwright as automated traffic. |
+| PC-4 expired login | Passed 2026-07-25 | A disposable clean Profile reached `login_required` through the production STDIO MCP path; global browser status agreed, the same session was startable again, the primary Profile was untouched, and the temporary Profile was removed. |
+| PC-5 user takeover | Passed 2026-07-25 | Controlled Chromium pages covered CAPTCHA, 2FA, adult-content confirmation, Cookie consent, rate limiting, and maintenance. Interaction cases returned explicit reasons and resumed the same session in Manager tests; maintenance/rate limiting remained retryable technical failures. No CAPTCHA bypass was attempted. |
 | PC-6 concurrency/Profile lock | Passed 2026-07-24 | Real two-process Profile probe returned `BROWSER_PROFILE_BUSY`; Manager regression returns `DOWNLOAD_BUSY` for a second active workflow. |
 
 The official Nexus file metadata was rechecked immediately before PC-3: File 47215 remains an active MAIN file named `ErdGameTools 20260607-9531-1-3-1-1780798908.zip` with `sizeInBytes=1474885`.
+
+PC-4 evidence is written under `.codex-work/acceptance-pc4/<run>/pc4-expired-login-status.json`. PC-5 evidence is written under `.codex-work/acceptance-pc5/<run>/pc5-interaction-status.json`. PC-5 deliberately uses controlled pages for rare or unsafe-to-induce conditions such as maintenance and rate limiting; it does not manipulate the real account or intentionally trigger Nexus protections.
 
 ## PC-3 live finding: Playwright challenge loop
 

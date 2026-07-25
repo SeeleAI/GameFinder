@@ -6,7 +6,9 @@ export type NexusPageKind =
   | "requirements"
   | "download_options"
   | "captcha"
+  | "two_factor"
   | "adult_content"
+  | "cookie_consent"
   | "rate_limited"
   | "maintenance"
   | "not_found"
@@ -23,7 +25,9 @@ export interface NexusPageSignals {
   requirementsPrompt: boolean;
   downloadOption: boolean;
   captcha: boolean;
+  twoFactor: boolean;
   adultContent: boolean;
+  cookieConsent: boolean;
   rateLimited: boolean;
   maintenance: boolean;
   notFound: boolean;
@@ -38,12 +42,14 @@ export interface NexusPageClassification {
 
 export function classifyPageSignals(signals: NexusPageSignals): NexusPageKind {
   if (signals.captcha) return "captcha";
+  if (signals.twoFactor) return "two_factor";
   if (signals.rateLimited || signals.status === 429) return "rate_limited";
   if (signals.maintenance || (signals.status !== null && signals.status >= 500)) return "maintenance";
   if (signals.notFound || signals.status === 404) return "not_found";
   if (signals.accessDenied || signals.status === 401 || signals.status === 403) return "access_denied";
-  if (signals.loginUrl || signals.loginRequired) return "login";
+  if (signals.cookieConsent) return "cookie_consent";
   if (signals.adultContent) return "adult_content";
+  if (signals.loginUrl || signals.loginRequired) return "login";
   if (signals.requirementsUrl || signals.requirementsPrompt) return "requirements";
   if (signals.downloadOption) return "download_options";
   if (signals.modFilesUrl || signals.manualDownload) return "mod_files";
@@ -83,9 +89,20 @@ export async function classifyNexusPage(
         '[role="dialog"][aria-modal="true"], [data-testid*="requirement" i], [data-test*="requirement" i], [class*="requirement" i]'
       )
     ).filter(visible);
+    const visibleLoginAction = Array.from(document.querySelectorAll("a[href], button"))
+      .filter(visible)
+      .some((element) => {
+        const text = ((element as HTMLElement).innerText ?? element.textContent ?? "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+        const href = element instanceof HTMLAnchorElement ? element.href.toLowerCase() : "";
+        return /^(?:log in|login|sign in)$/.test(text) && href.includes("users.nexusmods.com/auth/sign_in");
+      });
 
     return {
       loginRequired:
+        visibleLoginAction ||
         bodyText.includes("you have to be logged in") ||
         bodyText.includes("you need to log in") ||
         bodyText.includes("please log in again") ||
@@ -107,9 +124,21 @@ export async function classifyNexusPage(
         (bodyText.includes("cloudflare") &&
           (bodyText.includes("security verification") || bodyText.length < 1_000)) ||
         document.querySelector('iframe[src*="captcha" i], iframe[src*="challenge" i]') !== null,
+      twoFactor:
+        bodyText.includes("two-factor") ||
+        bodyText.includes("two factor") ||
+        bodyText.includes("authentication code") ||
+        bodyText.includes("verification code"),
       adultContent:
         bodyText.includes("adult content") &&
         (bodyText.includes("confirm") || bodyText.includes("preferences") || bodyText.includes("settings")),
+      cookieConsent:
+        (bodyText.includes("cookie") || bodyText.includes("privacy choices")) &&
+        actionTexts.some((text) =>
+          /^(?:accept(?: all)? cookies?|allow(?: all)? cookies?|agree|continue|manage cookies?|cookie settings)$/.test(
+            text
+          )
+        ),
       rateLimited:
         bodyText.includes("too many requests") ||
         bodyText.includes("rate limit") ||
@@ -132,7 +161,11 @@ export async function classifyNexusPage(
       /^\/[^/]+\/mods\/\d+\/?$/.test(pathname) &&
       (url.searchParams.get("tab") === "files" || url.searchParams.has("file_id")),
     requirementsUrl: pathname.includes("requirement"),
-    ...dom
+    ...dom,
+    twoFactor:
+      dom.twoFactor ||
+      (url?.hostname === "users.nexusmods.com" &&
+        /(?:two[_-]?factor|verification|authenticate|otp)/.test(pathname))
   };
 
   return {

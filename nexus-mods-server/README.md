@@ -163,6 +163,25 @@ Remove-Item Env:NEXUS_LIVE_TEST
 
 This runner downloads only Elden Ring Mod 9531 / File 47215 through the persistent Chromium backend. It validates the recorded 1,474,885-byte size and SHA-256 baseline, preserves the archive and receipt under a run-specific `.codex-work` directory, and never extracts or installs it. If Nexus shows login, 2FA, CAPTCHA, or another normal confirmation, complete it in the visible Chromium window and leave the runner active. The runner keeps that page stable and prints a `resume-after-interaction.flag` path; create the empty signal file only after the visible interaction is complete.
 
+Validate an expired login without touching the primary authenticated Profile:
+
+```powershell
+pnpm build
+$env:NEXUS_LIVE_TEST="1"
+pnpm acceptance:browser-expired-login
+Remove-Item Env:NEXUS_LIVE_TEST
+```
+
+This creates a disposable clean Profile outside the repository, verifies that the production STDIO MCP download reaches `login_required`, retries the same session, and removes the temporary Profile.
+
+Validate the PC-5 interaction matrix:
+
+```powershell
+pnpm acceptance:browser-interactions
+```
+
+This controlled Chromium acceptance covers CAPTCHA, 2FA, adult-content confirmation, Cookie consent, rate limiting, maintenance, and same-session recovery without manipulating the real account or intentionally triggering Nexus protections.
+
 Phase 5 found that Nexus/Cloudflare rejects Chromium launched through Playwright `launchPersistentContext`, even in visible mode. The production `persistent_chromium` backend now launches Chromium as an ordinary process with a fixed loopback CDP endpoint, opens the exact Nexus File URL before attachment, and attaches afterward:
 
 ```powershell
@@ -311,4 +330,4 @@ Not yet implemented:
 - resumable browser downloads;
 - Mod installation.
 
-Phase 5 PC-3 is complete against the real Nexus Mod through the production MCP chain. The existing native/NXM backend remains the default.
+Phase 5 PC-1 through PC-6 are complete. PC-3 passed against the real Nexus Mod through the production MCP chain; PC-4 passed with a real clean Profile; PC-5 uses deterministic controlled pages for conditions that should not be intentionally induced on Nexus. The existing native/NXM backend remains the default.

@@ -115,9 +115,9 @@ function shadowDirectSlowFixtureHtml(): string {
     </html>`;
 }
 
-async function routeFixture(page: Page, html: string): Promise<void> {
+async function routeFixture(page: Page, html: string, status = 200): Promise<void> {
   await page.route("https://www.nexusmods.com/**", async (route: Route) => {
-    await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html });
+    await route.fulfill({ status, contentType: "text/html; charset=utf-8", body: html });
   });
 }
 
@@ -243,6 +243,72 @@ describe.skipIf(!enabled)("Nexus browser download HTML fixture", () => {
           saveAsPath: path.join(directory, "fixture.part")
         })
       ).rejects.toMatchObject({ code: "CAPTCHA_REQUIRED" });
+    } finally {
+      await page.close();
+    }
+  });
+
+  it.each([
+    [
+      "logged-out file page",
+      "<!doctype html><html><head><title>Mod files</title></head><body><a href='https://users.nexusmods.com/auth/sign_in'>Log in</a><section data-fileid='47215'>ErdGameTools</section></body></html>",
+      200,
+      "LOGIN_REQUIRED",
+      "login_required"
+    ],
+    [
+      "two-factor authentication",
+      "<!doctype html><html><head><title>Verify account</title></head><body>Enter your authentication code to continue.</body></html>",
+      200,
+      "TWO_FACTOR_REQUIRED",
+      "user_interaction_required"
+    ],
+    [
+      "adult-content confirmation",
+      "<!doctype html><html><head><title>Adult content</title></head><body>Adult content requires confirmation in your preferences.</body></html>",
+      200,
+      "ADULT_CONTENT_CONFIRMATION_REQUIRED",
+      "user_interaction_required"
+    ],
+    [
+      "cookie consent",
+      "<!doctype html><html><head><title>Privacy choices</title></head><body><div role='dialog'>We use cookies.<button>Accept all cookies</button></div></body></html>",
+      200,
+      "COOKIE_CONSENT_REQUIRED",
+      "user_interaction_required"
+    ],
+    [
+      "rate limiting",
+      "<!doctype html><html><head><title>Too many requests</title></head><body>Rate limit exceeded.</body></html>",
+      429,
+      "NEXUS_RATE_LIMITED",
+      "failed"
+    ],
+    [
+      "maintenance",
+      "<!doctype html><html><head><title>Maintenance</title></head><body>Service temporarily unavailable for maintenance.</body></html>",
+      503,
+      "NEXUS_MAINTENANCE",
+      "failed"
+    ]
+  ])("classifies %s and stops safely", async (_name, html, status, code, finalState) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "nexus-browser-interaction-"));
+    temporaryDirectories.push(directory);
+    const page = await browser.newPage({ acceptDownloads: true });
+    await routeFixture(page, html, status);
+    const controller = new NexusDownloadPageController(page, config);
+
+    try {
+      await expect(
+        controller.run({
+          domainName: "eldenring",
+          modId: 9531,
+          fileId: 47215,
+          fileName: "ErdGameTools.zip",
+          saveAsPath: path.join(directory, "fixture.part")
+        })
+      ).rejects.toMatchObject({ code, retryable: true });
+      expect(controller.state).toBe(finalState);
     } finally {
       await page.close();
     }

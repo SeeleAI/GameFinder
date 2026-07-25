@@ -118,8 +118,10 @@ function publicError(error: NexusError): PublicDownloadError {
 function interactionForError(error: NexusError): BrowserInteractionReason | undefined {
   if (error.code === "LOGIN_REQUIRED") return "login";
   if (error.code === "CAPTCHA_REQUIRED") return "captcha";
+  if (error.code === "TWO_FACTOR_REQUIRED") return "two_factor";
+  if (error.code === "COOKIE_CONSENT_REQUIRED") return "cookie_consent";
+  if (error.code === "ADULT_CONTENT_CONFIRMATION_REQUIRED") return "adult_content";
   if (
-    error.code === "ADULT_CONTENT_CONFIRMATION_REQUIRED" ||
     error.code === "USER_INTERACTION_REQUIRED" ||
     error.code === "RESUMABLE_DOWNLOAD_NOT_SUPPORTED"
   ) {

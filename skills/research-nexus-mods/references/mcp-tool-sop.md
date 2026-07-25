@@ -11,7 +11,7 @@
 
 ## Preconditions
 
-Require one canonical game URL under `https://www.nexusmods.com/games/<slug>`. Keep this Skill read-only: never call `prepare_download`, `get_download_status`, or `download_mod_file`.
+Require one canonical game URL under `https://www.nexusmods.com/games/<slug>`. Keep this Skill read-only: never call `open_nexus_login`, `prepare_download`, `start_download`, `get_download_status`, `cancel_download`, or `download_mod_file`.
 
 Call `health_check` only when tool availability or credential configuration is uncertain. Call `validate_credentials` after an authentication error or when quota/capability status matters; do not repeat it for every candidate.
 
@@ -84,3 +84,4 @@ Never hide the fallback. State which channel failed, what replaced it, and how t
 - External source and license claims have direct author/maintainer evidence.
 - The fixed report contract is complete.
 - No research step called a download tool or inspected an archive.
+- A download handoff, when requested, names exactly one user-selected candidate and contains no credentials, output path, or authorization material.

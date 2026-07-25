@@ -69,9 +69,9 @@ Include only when no single mod covers the goal. Assign one clear role to each c
 
 Do not omit required sections. Keep unavailable values as `unknown` or `not publicly available`; never fill them with estimates.
 
-## Optional machine handoff
+## Optional general research handoff
 
-Emit this only when requested, when another skill will consume the result, or when installation is explicitly next. Preserve unknown values as `null`.
+Emit this only when requested or when another research/development workflow will consume the result. Preserve unknown values as `null`. For an exact selected Mod that will be downloaded next, use `download-handoff.md` instead.
 
 ```json
 {

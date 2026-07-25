@@ -1,11 +1,24 @@
 ---
 name: research-nexus-mods
-description: Research, verify, compare, and recommend Nexus Mods for the exact game identified by a canonical Nexus game-page URL, using nexus-mods-server MCP first when available. Use for Nexus/N站 requests about popular, feature-rich, all-in-one, or development-reference mods, including verified mod links, functions, implementation type, language or loader evidence, compatibility, source licenses, community adoption, versatility, and development value. Require a URL under https://www.nexusmods.com/games/ followed by the game slug; do not download or install mods.
+description: Research, verify, compare, and recommend Nexus Mods for the exact game identified by a canonical Nexus game-page URL, using nexus-mods-server MCP first. Use while the user is deciding which Mod is popular, feature-rich, all-in-one, compatible, or useful as a development reference. Require a URL under https://www.nexusmods.com/games/ followed by the game slug. Do not use when one exact Mod is already selected and the request is only to download, extract, install, import, or develop it; never perform those actions.
 ---
 
 # Research Nexus Mods
 
 Produce a current, evidence-backed Nexus Mod report for one unambiguous game. Use `nexus-mods-server` as the primary source for Nexus identity, candidates, rankings, metrics, files, changelogs, and requirements. Browse the web for author-linked source, licenses, permissions, compatibility claims, and evidence gaps because those facts change and are not all exposed by the API.
+
+## Route the request
+
+Use this Skill when the unresolved question is **which Mod to choose**. Use `download-nexus-mods` when the user has already selected one canonical Mod and explicitly wants its archive.
+
+For a combined “find and download” request:
+
+1. Complete research without calling download or browser tools.
+2. Present the finalists and obtain one unambiguous selection unless the user's criteria produce only one supported candidate and the choice is explicit.
+3. Emit the Research→Download handoff in [references/download-handoff.md](references/download-handoff.md).
+4. Let `download-nexus-mods` revalidate and perform the separate download workflow.
+
+Research may describe documented installation complexity, dependencies, and compatibility, but it must not extract, deploy, enable, import, or claim to install anything.
 
 ## Require an exact game page
 
@@ -49,6 +62,7 @@ Before evaluating candidates, read:
 - [references/evaluation-framework.md](references/evaluation-framework.md) for discovery, evidence, metrics, and independent scoring rules.
 - [references/implementation-identification.md](references/implementation-identification.md) for implementation, language, loader, and confidence classification.
 - [references/report-contract.md](references/report-contract.md) for the required human-readable report and optional machine handoff.
+- [references/download-handoff.md](references/download-handoff.md) only when one researched candidate is being handed to `download-nexus-mods`.
 
 ## Research in layers
 
@@ -59,7 +73,7 @@ Before evaluating candidates, read:
 5. Browse finalist pages and author-linked sources only for API gaps such as permissions, issue/support evidence, repository, license, build documentation, and implementation details not established by file metadata.
 6. Verify the finalists, classify their implementation with an evidence level, score each evaluation dimension independently, and select winners appropriate to the requested goal.
 
-Do not call `prepare_download` or `download_mod_file`, and do not download archives or executables merely to identify the implementation. If public Nexus metadata and author-linked sources do not establish a language or framework, report it as unknown. This skill researches only; downloading and installation belong to a separate workflow.
+Use only read-only Nexus research tools. Do not call `open_nexus_login`, `prepare_download`, `start_download`, `get_download_status`, `cancel_download`, or `download_mod_file`, and do not download archives or executables merely to identify the implementation. If public Nexus metadata and author-linked sources do not establish a language or framework, report it as unknown. This Skill researches only; downloading and installation belong to separate workflows.
 
 ## Verify every finalist
 
@@ -100,10 +114,12 @@ Follow [references/report-contract.md](references/report-contract.md) exactly. L
 
 The same mod may win more than one category. Include direct links beside claims and state evidence gaps, inference confidence, version limitations, licensing restrictions, and offline or anti-cheat risks.
 
-Emit the optional machine-readable handoff only when the user requests it, another skill will consume it, or installation is explicitly the next workflow. Do not create or install files during ordinary research.
+Emit the general machine-readable research result only when requested or another Skill will consume it. Emit the narrower Research→Download handoff only after one candidate is unambiguously selected for download. Do not create, download, extract, or install files during research.
 
 If `nexus-mods-server` is unavailable, returns an authentication/schema error, or lacks a required field, state the exact failure and use the bounded fallback in `mcp-tool-sop.md`. Do not silently begin with a general search engine when MCP is healthy.
 
 ## Safety boundary
 
 Keep memory editing, DLL injection, trainers, and cheat tables in offline development or testing contexts. Recommend documented offline workflows, separate test saves, and backups. Do not help deploy cheats into competitive or online play.
+
+Do not treat a research recommendation as download authorization. Do not treat a verified download as installation approval.

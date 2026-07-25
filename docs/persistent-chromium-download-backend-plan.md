@@ -1,6 +1,6 @@
 # Nexus Mods 专用持久化 Chromium 下载后端开发计划
 
-> 状态：Phase 0–5 已完成；PC-1 至 PC-6 均有验收记录，下一阶段为 Phase 6 Skill 与默认后端决策
+> 状态：Phase 0–5 已完成；Phase 6A 实现与后端验收已完成，等待新 Codex 任务黑盒触发测试；Phase 6B 尚未开始
 > 编写日期：2026-07-24
 > 目标项目：`nexus-mods-server`
 > 目标运行环境：Windows、本地单用户、STDIO MCP、Node.js 20+
@@ -1449,22 +1449,47 @@ pnpm test:stdio
 - 不复制粘贴 NXM；
 - 不自动安装。
 
-### Phase 6：Skill 与默认后端决策
+### Phase 6A：Research/Download Skill 收尾
 
 任务：
 
-- 更新下载/安装 Skill 的工具 SOP；
-- `research-nexus-mods` 继续保持只读，不调用下载工具；
-- 文档说明首次登录和人工接管；
-- 决定是否把 `persistent_chromium` 设为默认；
-- 明确 native NXM fallback 的保留周期。
+- 新建 `download-nexus-mods`，只负责编排已验证 MCP 下载流程；
+- 审计 `research-nexus-mods` 的触发条件、只读工具边界和 Research→Download handoff；
+- `research-nexus-mods` 不调用浏览器、授权或下载工具；
+- `download-nexus-mods` 对普通下载显式使用 `persistent_chromium`，MCP 的兼容默认值仍保持 `native`；
+- 文档说明首次登录、人工接管、同 session 恢复、receipt 和安装停止边界；
+- 保留 native/NXM fallback，但禁止无提示的 backend 切换；
+- 更新工作区与个人目录 Skill 副本并验证一致性；
+- 独立验证纯研究、精确下载、Research→Download 交接和安装请求停止边界。
 
 退出标准：
 
-- Skill 能正确区分研究和下载；
+- 两个 Skill 能正确区分“选择哪个 Mod”和“下载已选择的 Mod”；
 - Agent 遇到 `login_required` 时引导用户使用专用 Chromium；
 - 未经明确下载意图不会启动浏览器下载；
-- 默认后端变更经过单独提交和测试。
+- 下载完成只返回 archive + receipt，不解压、不安装、不导入 Mod Manager；
+- handoff 不包含凭据、临时授权或安装路径；
+- Skill 校验、MCP 回归和真实精确文件下载通过。
+
+### Phase 6B：安装 Skill 设计与开发
+
+Phase 6A 完成后再开始，当前没有可用的安装 Skill 或安装 MCP 后端。
+
+任务：
+
+- 定义 `install-game-mods` 的输入为已验证 archive + receipt；
+- 决定直接文件部署、游戏专用适配器与 Vortex 集成的边界；
+- 设计 dry-run、压缩包结构识别、目标目录验证、冲突扫描、备份、manifest、卸载和回滚；
+- 定义 DLL、EXE、脚本、覆盖文件和未知压缩结构的风险处理；
+- 为具体游戏建立可测试的安装适配器；
+- 在真实写入前建立独立的安装验收计划。
+
+退出标准：
+
+- 下载与安装保持两个独立授权阶段；
+- 未经安装意图和必要确认不修改游戏文件；
+- 每次安装均可追踪、可诊断，并在支持范围内可回滚；
+- Vortex 与直接部署的能力边界有明确记录和测试。
 
 ## 20. 迁移与兼容策略
 

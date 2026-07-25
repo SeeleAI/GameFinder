@@ -5,6 +5,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { afterAll, describe, expect, it } from "vitest";
 import { BrowserManager } from "../src/browser/browser-manager.js";
+import { OrdinaryCdpBrowserManager } from "../src/browser/ordinary-cdp-browser-manager.js";
 
 const enabled = process.env.NEXUS_BROWSER_INTEGRATION_TEST === "1";
 const temporaryDirectories: string[] = [];
@@ -60,6 +61,48 @@ describe.skipIf(!enabled)("persistent Chromium integration", () => {
       expect(cookies).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: "gamefinder_persistence_test", value: "present" })])
       );
+    } finally {
+      await second.close();
+    }
+  }, 60_000);
+
+  it("preserves ordinary Chromium Profile storage across a CDP-attached restart", async () => {
+    const engineExecutablePath = process.env.NEXUS_BROWSER_INTEGRATION_EXECUTABLE ?? chromium.executablePath();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "nexus-ordinary-browser-persistence-"));
+    temporaryDirectories.push(directory);
+    const config = {
+      profileDir: path.join(directory, "profile"),
+      launchTimeoutMs: 30_000,
+      navigationTimeoutMs: 45_000,
+      downloadStartTimeoutMs: 120_000,
+      downloadTimeoutMs: 0,
+      loginWaitMs: 900_000,
+      keepOpen: true
+    };
+    const html = "<!doctype html><html><body>ordinary CDP persistence fixture</body></html>";
+
+    const first = new OrdinaryCdpBrowserManager(config, engineExecutablePath);
+    const firstPage = await first.getPage();
+    await firstPage.route("https://example.test/**", async (route) => {
+      await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html });
+    });
+    await firstPage.goto("https://example.test/persistence");
+    await firstPage.evaluate(() => localStorage.setItem("gamefinder_cdp_persistence", "present"));
+    await first.close();
+
+    const second = new OrdinaryCdpBrowserManager(config, engineExecutablePath);
+    try {
+      const secondPage = await second.getPage();
+      await secondPage.route("https://example.test/**", async (route) => {
+        await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html });
+      });
+      await secondPage.goto("https://example.test/persistence");
+      expect(await secondPage.evaluate(() => localStorage.getItem("gamefinder_cdp_persistence"))).toBe("present");
+      expect(await second.status()).toMatchObject({
+        launchMode: "ordinary_chromium_cdp",
+        running: true,
+        profileBusy: false
+      });
     } finally {
       await second.close();
     }

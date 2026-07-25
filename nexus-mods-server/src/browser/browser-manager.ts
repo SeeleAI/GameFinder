@@ -8,6 +8,7 @@ import { loadBrowserConfig } from "./browser-config.js";
 import { BrowserProfileLock } from "./browser-lock.js";
 
 export interface BrowserRuntimeStatus {
+  launchMode: "playwright_persistent" | "ordinary_chromium_cdp";
   engineInstalled: boolean;
   profileExists: boolean;
   profilePathConfigured: true;
@@ -21,6 +22,7 @@ export type PersistentContextLauncher = (
 ) => Promise<BrowserContext>;
 
 export class BrowserManager {
+  readonly launchMode = "playwright_persistent" as const;
   readonly config: BrowserConfig;
   readonly #lock: BrowserProfileLock;
   readonly #engineExecutablePath: string;
@@ -51,6 +53,7 @@ export class BrowserManager {
 
   async status(): Promise<BrowserRuntimeStatus> {
     return {
+      launchMode: this.launchMode,
       engineInstalled: existsSync(this.#engineExecutablePath),
       profileExists: existsSync(this.config.profileDir),
       profilePathConfigured: true,

@@ -125,7 +125,7 @@ export class NexusDownloadPageController implements BrowserPageDownloadControlle
     try {
       this.#transition("checking_login");
       this.#transition("navigating");
-      const response = await this.#navigate(targetUrl);
+      const response = this.#page.url() === targetUrl ? null : await this.#navigate(targetUrl);
       await this.#assertPageCanContinue(await classifyNexusPage(this.#page, response));
 
       this.#transition("locating_file");

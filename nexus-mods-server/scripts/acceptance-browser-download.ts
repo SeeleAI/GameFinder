@@ -134,44 +134,6 @@ function report(event: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`);
 }
 
-async function waitForPersistentLogin(client: Client, deadline: number): Promise<void> {
-  const loginResult = await client.callTool({
-    name: "open_nexus_login",
-    arguments: { returnToModUrl: TARGET_MOD_URL }
-  });
-  const login = structured(loginResult).login as {
-    state: string;
-    requiresUserInteraction: boolean;
-    interactionReason: string | null;
-  };
-  report({
-    phase: "login_check",
-    state: login.state,
-    requiresUserInteraction: login.requiresUserInteraction,
-    interactionReason: login.interactionReason
-  });
-  if (login.state === "authenticated") return;
-
-  report({
-    phase: "user_interaction",
-    message: "Complete Nexus login, 2FA, or CAPTCHA in the visible dedicated Chromium window."
-  });
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    const statusResult = await client.callTool({ name: "browser_status", arguments: {} });
-    const browser = structured(statusResult).browser as {
-      authState: string;
-      requiresUserInteraction: boolean;
-      interactionReason: string | null;
-    };
-    if (browser.authState === "authenticated") {
-      report({ phase: "login_check", state: "authenticated" });
-      return;
-    }
-  }
-  throw new Error("Timed out waiting for persistent Nexus login.");
-}
-
 function validatePrepared(prepared: PreparedDownload): void {
   if (prepared.backend !== "persistent_chromium") {
     throw new Error(`Expected persistent_chromium backend, received ${prepared.backend}.`);
@@ -320,8 +282,9 @@ async function main(): Promise<void> {
   const deadline = Date.now() + ACCEPTANCE_TIMEOUT_MS;
 
   try {
+    await writeStatus({ phase: "connecting" });
     await client.connect(transport);
-    await waitForPersistentLogin(client, deadline);
+    await writeStatus({ phase: "connected" });
     const preparedResult = await client.callTool({
       name: "prepare_download",
       arguments: {

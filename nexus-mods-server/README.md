@@ -163,7 +163,7 @@ Remove-Item Env:NEXUS_LIVE_TEST
 
 This runner downloads only Elden Ring Mod 9531 / File 47215 through the persistent Chromium backend. It validates the recorded 1,474,885-byte size and SHA-256 baseline, preserves the archive and receipt under a run-specific `.codex-work` directory, and never extracts or installs it. If Nexus shows login, 2FA, CAPTCHA, or another normal confirmation, complete it in the visible Chromium window and leave the runner active. The runner keeps that page stable and prints a `resume-after-interaction.flag` path; create the empty signal file only after the visible interaction is complete.
 
-Phase 5 found that Nexus/Cloudflare rejects Chromium launched through Playwright `launchPersistentContext`, even in visible mode. The successful experimental path launches Chromium as an ordinary process with a fixed loopback CDP endpoint and attaches afterward:
+Phase 5 found that Nexus/Cloudflare rejects Chromium launched through Playwright `launchPersistentContext`, even in visible mode. The production `persistent_chromium` backend now launches Chromium as an ordinary process with a fixed loopback CDP endpoint, opens the exact Nexus File URL before attachment, and attaches afterward:
 
 ```powershell
 $env:NEXUS_LIVE_TEST="1"
@@ -173,7 +173,7 @@ pnpm acceptance:browser-cdp-download
 Remove-Item Env:NEXUS_LIVE_TEST
 ```
 
-The exact PC-3 target passed through this runner with the expected 1,474,885 bytes, SHA-256, and ZIP integrity. This experimental manager is not yet wired into the MCP tools; `persistent_chromium` still uses the Phase 4 Playwright-launch backend, and `native` remains the default.
+The exact PC-3 target passed through both the direct runner and the production MCP `prepare_download → start_download → get_download_status` chain with the expected 1,474,885 bytes, SHA-256, and ZIP integrity. `persistent_chromium` uses `OrdinaryCdpBrowserManager`; `native` remains the default.
 
 ## Persistent Chromium download workflow
 
@@ -308,8 +308,7 @@ Implemented:
 
 Not yet implemented:
 
-- real Nexus Mod download acceptance;
 - resumable browser downloads;
 - Mod installation.
 
-Phase 4 is complete under local fixtures and MCP protocol tests. Phase 5 will validate the same path against a real Nexus Mod. The existing native/NXM backend remains the default.
+Phase 5 PC-3 is complete against the real Nexus Mod through the production MCP chain. The existing native/NXM backend remains the default.

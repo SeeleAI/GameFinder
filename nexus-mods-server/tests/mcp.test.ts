@@ -89,6 +89,7 @@ function browserWithDownloadFactory(
 ): NexusBrowserAutomation {
   return {
     status: vi.fn(async (): Promise<NexusBrowserStatus> => ({
+      launchMode: "ordinary_chromium_cdp",
       engineInstalled: true,
       profileExists: true,
       profilePathConfigured: true,
@@ -106,7 +107,7 @@ function browserWithDownloadFactory(
       requiresUserInteraction: false,
       interactionReason: null
     })),
-    createDownloadController: vi.fn(factory),
+    createDownloadController: vi.fn(async (_input, onState) => factory(onState)),
     close: vi.fn(async () => undefined)
   };
 }
@@ -125,6 +126,7 @@ describe("MCP protocol", () => {
   it("initializes, lists the required tools, and returns structured health", async () => {
     const browser: NexusBrowserAutomation = {
       status: vi.fn(async (): Promise<NexusBrowserStatus> => ({
+        launchMode: "ordinary_chromium_cdp",
         engineInstalled: true,
         profileExists: true,
         profilePathConfigured: true,
@@ -179,7 +181,12 @@ describe("MCP protocol", () => {
     const browserStatus = await client.callTool({ name: "browser_status", arguments: {} });
     expect(browserStatus.structuredContent).toMatchObject({
       ok: true,
-      browser: { engineInstalled: true, running: false, authState: "unknown" }
+      browser: {
+        launchMode: "ordinary_chromium_cdp",
+        engineInstalled: true,
+        running: false,
+        authState: "unknown"
+      }
     });
 
     const login = await client.callTool({

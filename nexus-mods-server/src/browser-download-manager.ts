@@ -274,9 +274,16 @@ export class BrowserDownloadManager {
 
   async #run(session: BrowserDownloadSession): Promise<void> {
     try {
-      const controller = await this.#browser.createDownloadController((state) => {
-        this.#applyControllerState(session, state);
-      });
+      const controller = await this.#browser.createDownloadController(
+        {
+          domainName: session.domainName,
+          modId: session.modId,
+          fileId: session.file.fileId
+        },
+        (state) => {
+          this.#applyControllerState(session, state);
+        }
+      );
       session.controller = controller;
       if (session.cancelRequested) {
         await controller.cancel();

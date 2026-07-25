@@ -108,6 +108,52 @@ describe("NexusLoginController", () => {
     expect(state.navigations.at(-1)).toBe("https://www.nexusmods.com/eldenring/mods/9531");
   });
 
+  it("accepts the protected account-security redirect as an authenticated session", async () => {
+    const state: MutablePageState = {
+      url: "https://users.nexusmods.com/account/security",
+      signals: {
+        hasPasswordField: false,
+        hasLoginForm: false,
+        loginRequiredText: false,
+        captchaText: false,
+        twoFactorText: false,
+        maintenanceText: false
+      },
+      navigations: []
+    };
+    const controller = new NexusLoginController(createBrowser(createPage(state)));
+    const result = await controller.inspectRunningBrowser();
+
+    expect(result).toMatchObject({
+      state: "authenticated",
+      requiresUserInteraction: false,
+      interactionReason: null
+    });
+  });
+
+  it("does not trust the account-security URL when the page contains a login form", async () => {
+    const state: MutablePageState = {
+      url: "https://users.nexusmods.com/account/security",
+      signals: {
+        hasPasswordField: true,
+        hasLoginForm: true,
+        loginRequiredText: true,
+        captchaText: false,
+        twoFactorText: false,
+        maintenanceText: false
+      },
+      navigations: []
+    };
+    const controller = new NexusLoginController(createBrowser(createPage(state)));
+    const result = await controller.inspectRunningBrowser();
+
+    expect(result).toMatchObject({
+      state: "login_required",
+      requiresUserInteraction: false,
+      interactionReason: null
+    });
+  });
+
   it("verifies the protected page when login completes on another Nexus page", async () => {
     const state: MutablePageState = {
       url: "https://users.nexusmods.com/auth/sign_in",

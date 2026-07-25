@@ -5,6 +5,7 @@ import path from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserManager } from "../src/browser/browser-manager.js";
+import { OrdinaryCdpBrowserManager } from "../src/browser/ordinary-cdp-browser-manager.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -83,5 +84,35 @@ describe("BrowserManager", () => {
       code: "BROWSER_NOT_INSTALLED",
       message: expect.stringContaining("pnpm setup:browser")
     });
+  });
+});
+
+describe("OrdinaryCdpBrowserManager", () => {
+  it("reports the production launch mode and a missing Chromium engine", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "nexus-ordinary-browser-missing-"));
+    temporaryDirectories.push(directory);
+    const manager = new OrdinaryCdpBrowserManager(
+      {
+        profileDir: path.join(directory, "profile"),
+        launchTimeoutMs: 30_000,
+        navigationTimeoutMs: 45_000,
+        downloadStartTimeoutMs: 120_000,
+        downloadTimeoutMs: 0,
+        loginWaitMs: 900_000,
+        keepOpen: true
+      },
+      path.join(directory, "missing.exe")
+    );
+
+    expect(await manager.status()).toMatchObject({
+      launchMode: "ordinary_chromium_cdp",
+      engineInstalled: false,
+      running: false
+    });
+    await expect(manager.getPage()).rejects.toMatchObject({
+      code: "BROWSER_NOT_INSTALLED",
+      message: expect.stringContaining("pnpm setup:browser")
+    });
+    await manager.close();
   });
 });

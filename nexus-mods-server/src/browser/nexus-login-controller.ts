@@ -50,6 +50,10 @@ function isProtectedPreferencesUrl(url: URL): boolean {
   return url.hostname === "www.nexusmods.com" && url.pathname.startsWith("/settings/preferences");
 }
 
+function isProtectedAccountSecurityUrl(url: URL): boolean {
+  return url.hostname === "users.nexusmods.com" && url.pathname.startsWith("/account/security");
+}
+
 function currentUrlIsLogin(page: Page): boolean {
   try {
     return isLoginUrl(new URL(page.url()));
@@ -270,7 +274,7 @@ export class NexusLoginController {
         interactionReason: waiting ? "login" : null
       };
     }
-    if (isProtectedPreferencesUrl(currentUrl)) {
+    if (isProtectedPreferencesUrl(currentUrl) || isProtectedAccountSecurityUrl(currentUrl)) {
       return {
         state: "authenticated",
         checkedAt,

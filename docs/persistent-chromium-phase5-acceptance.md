@@ -159,7 +159,7 @@ webdriver:   false
 
 An independent `Get-FileHash -Algorithm SHA256` check matched the receipt. The receipt contained none of the checked temporary credential markers: `nxm://`, `key=`, `expires=`, `cookie`, or `authorization:`.
 
-The production MCP browser backend has not yet been switched from `launchPersistentContext` to `OrdinaryCdpBrowserManager`; that integration should be a separate reviewed change. Native/NXM remains the default.
+The production MCP browser backend now uses `OrdinaryCdpBrowserManager`. On 2026-07-24, an independent STDIO MCP acceptance called `prepare_download`, `start_download`, and polled `get_download_status` for Mod 9531 / File 47215. It completed in about 16 seconds with the same 1,474,885-byte file, SHA-256, and valid ZIP result shown above. The production path opens the exact Nexus File URL in ordinary Chromium before CDP attachment and does not use `open_nexus_login`, NXM, or Vortex during this acceptance. Native/NXM remains the default when no backend is specified.
 
 ## Automated baseline
 

@@ -7,6 +7,7 @@ import { NexusError } from "../errors.js";
 import type { BrowserConfig } from "./browser-config.js";
 import { loadBrowserConfig } from "./browser-config.js";
 import { BrowserProfileLock } from "./browser-lock.js";
+import type { BrowserRuntimeStatus } from "./browser-manager.js";
 
 async function reserveLoopbackPort(): Promise<number> {
   const server = createServer();
@@ -54,7 +55,16 @@ async function terminate(child: ChildProcess | undefined): Promise<void> {
   if (!exited && child.pid) process.kill(child.pid);
 }
 
+async function waitForExit(child: ChildProcess | undefined, timeoutMs: number): Promise<boolean> {
+  if (!child || child.exitCode !== null) return true;
+  return Promise.race([
+    new Promise<boolean>((resolve) => child.once("exit", () => resolve(true))),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs))
+  ]);
+}
+
 export class OrdinaryCdpBrowserManager {
+  readonly launchMode = "ordinary_chromium_cdp" as const;
   readonly config: BrowserConfig;
   readonly #lock: BrowserProfileLock;
   readonly #engineExecutablePath: string;
@@ -75,6 +85,17 @@ export class OrdinaryCdpBrowserManager {
 
   get running(): boolean {
     return this.#browser?.isConnected() === true && this.#child?.exitCode === null;
+  }
+
+  async status(): Promise<BrowserRuntimeStatus> {
+    return {
+      launchMode: this.launchMode,
+      engineInstalled: existsSync(this.#engineExecutablePath),
+      profileExists: existsSync(this.config.profileDir),
+      profilePathConfigured: true,
+      profileBusy: await this.#lock.isBusy(),
+      running: this.running
+    };
   }
 
   async getPage(startUrl = "about:blank"): Promise<Page> {
@@ -152,7 +173,9 @@ export class OrdinaryCdpBrowserManager {
     try {
       if (browser?.isConnected()) await browser.close();
     } finally {
-      await terminate(this.#child);
+      if (!(await waitForExit(this.#child, 5_000))) {
+        await terminate(this.#child);
+      }
       this.#child = undefined;
       await this.#lock.release();
     }

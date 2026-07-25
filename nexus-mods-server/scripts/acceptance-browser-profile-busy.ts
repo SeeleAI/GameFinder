@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BrowserManager } from "../src/browser/browser-manager.js";
+import { OrdinaryCdpBrowserManager } from "../src/browser/ordinary-cdp-browser-manager.js";
 import { asNexusError } from "../src/errors.js";
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -9,7 +9,7 @@ const projectDirectory = path.resolve(path.dirname(scriptPath), "..");
 const isProbe = process.argv.includes("--probe");
 
 async function runProbe(): Promise<void> {
-  const browser = new BrowserManager();
+  const browser = new OrdinaryCdpBrowserManager();
   try {
     await browser.getPage();
     throw new Error("A second process unexpectedly opened the dedicated Nexus Chromium Profile.");
@@ -29,7 +29,7 @@ async function runProbe(): Promise<void> {
 }
 
 async function runParent(): Promise<void> {
-  const browser = new BrowserManager();
+  const browser = new OrdinaryCdpBrowserManager();
   try {
     await browser.getPage();
     const child = spawn(process.execPath, ["--import", "tsx", scriptPath, "--probe"], {

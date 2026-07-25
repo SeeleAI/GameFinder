@@ -1,12 +1,15 @@
+import type { Page } from "playwright";
+import type { BrowserConfig } from "./browser-config.js";
 import type { BrowserRuntimeStatus } from "./browser-manager.js";
-import { BrowserManager } from "./browser-manager.js";
 import {
+  buildNexusFileUrl,
   NexusDownloadPageController,
   type BrowserDownloadStateListener,
   type BrowserPageDownloadController
 } from "./nexus-download-page-controller.js";
 import type { NexusLoginStatus } from "./nexus-login-controller.js";
 import { NexusLoginController } from "./nexus-login-controller.js";
+import { OrdinaryCdpBrowserManager } from "./ordinary-cdp-browser-manager.js";
 
 export interface NexusBrowserStatus extends BrowserRuntimeStatus {
   authState: NexusLoginStatus["state"];
@@ -18,15 +21,30 @@ export interface NexusBrowserStatus extends BrowserRuntimeStatus {
 export interface NexusBrowserAutomation {
   status(): Promise<NexusBrowserStatus>;
   openLogin(returnToModUrl?: string): Promise<NexusLoginStatus>;
-  createDownloadController(onState?: BrowserDownloadStateListener): Promise<BrowserPageDownloadController>;
+  createDownloadController(
+    input: { domainName: string; modId: number; fileId: number },
+    onState?: BrowserDownloadStateListener
+  ): Promise<BrowserPageDownloadController>;
+  close(): Promise<void>;
+}
+
+export interface NexusBrowserManager {
+  readonly launchMode: BrowserRuntimeStatus["launchMode"];
+  readonly config: BrowserConfig;
+  readonly running: boolean;
+  status(): Promise<BrowserRuntimeStatus>;
+  getPage(startUrl?: string): Promise<Page>;
   close(): Promise<void>;
 }
 
 export class NexusBrowserService implements NexusBrowserAutomation {
-  readonly #manager: BrowserManager;
+  readonly #manager: NexusBrowserManager;
   readonly #login: NexusLoginController;
 
-  constructor(manager = new BrowserManager(), login = new NexusLoginController(manager)) {
+  constructor(
+    manager: NexusBrowserManager = new OrdinaryCdpBrowserManager(),
+    login = new NexusLoginController(manager)
+  ) {
     this.#manager = manager;
     this.#login = login;
   }
@@ -47,8 +65,11 @@ export class NexusBrowserService implements NexusBrowserAutomation {
     return this.#login.openLogin(returnToModUrl);
   }
 
-  async createDownloadController(onState?: BrowserDownloadStateListener): Promise<BrowserPageDownloadController> {
-    const page = await this.#manager.getPage();
+  async createDownloadController(
+    input: { domainName: string; modId: number; fileId: number },
+    onState?: BrowserDownloadStateListener
+  ): Promise<BrowserPageDownloadController> {
+    const page = await this.#manager.getPage(buildNexusFileUrl(input));
     return new NexusDownloadPageController(page, this.#manager.config, onState);
   }
 

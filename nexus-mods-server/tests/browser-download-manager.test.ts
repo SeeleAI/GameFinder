@@ -45,6 +45,7 @@ function browserWithFactory(
 ): NexusBrowserAutomation {
   return {
     status: vi.fn(async (): Promise<NexusBrowserStatus> => ({
+      launchMode: "ordinary_chromium_cdp",
       engineInstalled: true,
       profileExists: true,
       profilePathConfigured: true,
@@ -62,7 +63,7 @@ function browserWithFactory(
       requiresUserInteraction: false,
       interactionReason: null
     })),
-    createDownloadController: vi.fn(factory),
+    createDownloadController: vi.fn(async (_input, onState) => factory(onState)),
     close: vi.fn(async () => undefined)
   };
 }

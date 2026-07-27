@@ -5,7 +5,7 @@
 | Kind | Download behavior |
 |---|---|
 | `nexus_mod` | Select and download an exact Nexus file unless independently satisfied. |
-| `loader_runtime` | Download when missing or explicitly requested; installation needs a dedicated Loader Adapter. |
+| `loader_runtime` | Download when missing or explicitly requested; installation analyzes it through Contract V2 like any other dependency. A bundled installer may require the generic M3 controlled-installer capability. |
 | `external_requirement` | Preserve URL/evidence and stop for manual handling; never fetch through an unrelated downloader. |
 | `dlc` | Report as a game-store entitlement/content requirement; never treat as a Mod file. |
 

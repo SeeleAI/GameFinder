@@ -39,6 +39,11 @@ import { InstallationRecordStore } from "./storage/installation-record-store.js"
 import { PlanExecutionContextStore } from "./storage/plan-execution-context-store.js";
 import { PlanStore } from "./storage/plan-store.js";
 import { TransactionJournalStore } from "./storage/transaction-journal-store.js";
+import {
+  AGENTIC_FILE_METHOD_ADAPTER_ID,
+  AgenticFileMethodAdapter,
+} from "./v2/agentic-file-method-adapter.js";
+import { LegacyV1CompatibilityProvider } from "./v2/legacy-compatibility-provider.js";
 
 export interface InstallInputReference {
   archivePath: string;
@@ -236,12 +241,29 @@ export class InstallService {
       profiles: new Map([
         [STARDEW_VALLEY_PROFILE.profileId, STARDEW_VALLEY_PROFILE],
       ]),
-      registry: new AdapterRegistry([new SmapiFolderModAdapter()]),
+      registry: new AdapterRegistry([
+        new SmapiFolderModAdapter(),
+        new AgenticFileMethodAdapter(),
+      ]),
       planStore,
       contextStore,
       backupStore,
       journalStore,
       recordStore,
+    });
+  }
+
+  createLegacyCompatibilityProvider(): LegacyV1CompatibilityProvider {
+    return new LegacyV1CompatibilityProvider({
+      registry: new AdapterRegistry(
+        this.#registry
+          .list()
+          .filter(
+            (adapter) =>
+              adapter.descriptor.adapterId !== AGENTIC_FILE_METHOD_ADAPTER_ID,
+          ),
+      ),
+      profiles: this.listProfiles(),
     });
   }
 

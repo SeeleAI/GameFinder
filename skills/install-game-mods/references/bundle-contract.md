@@ -2,29 +2,25 @@
 
 ## Validate first
 
-Call `inspect_mod_bundle(bundlePath)`. Require:
+Call `inspect_mod_bundle(bundlePath)`. Require an absolute Manifest path, valid Bundle hash, valid receipt and Archive hash for every downloadable node, one root node, dependency-first `installOrder`, and no unexpected Archive.
 
-- Absolute Manifest path and matching `bundlePath`.
-- Valid Bundle hash.
-- Valid receipt and Archive hash for every entry.
-- One root node.
-- Dependency-first `installOrder`.
-- No unexpected Archive.
-
-`download_complete` means downloadable material is complete, not installed. `download_complete_requirements_pending` blocks dependent installation until every manual requirement is resolved.
+`download_complete` means material is present, not installed. A pending manual requirement still blocks dependents.
 
 ## Process entries
 
 For each node in `installOrder`:
 
-1. Check whether a Game Profile or managed Installation Record proves it satisfied.
-2. Skip only with evidence; record the reason.
-3. Require an implemented Adapter for an unsatisfied Archive.
-4. Plan, display, approve, apply, and verify as a separate transaction.
-5. Stop before dependents if the node fails or remains incompatible.
+1. Check whether a current Dynamic Game Context or managed Installation Record proves it satisfied.
+2. Skip only with evidence and record the reason.
+3. Prepare an Evidence Pack and query Methods.
+4. Reuse a verified Method or derive a bounded Agent Proposal.
+5. Freeze, display, approve, apply, and verify as a separate transaction.
+6. Stop before dependents if the node fails or remains below the dependent's required verification level.
 
-Generate Plans sequentially. Earlier dependency writes may change filesystem pre-state, so do not freeze all Install Plans at once.
+Generate Plans sequentially because earlier dependency writes change filesystem pre-state.
 
 ## Loader runtimes
 
-Treat `loader_runtime` as a distinct package class. A normal Mod-folder Adapter must not claim it. If no Loader Adapter is implemented, return a blocked dependency result with the Archive and requirement evidence; do not execute the bundled installer.
+Treat `loader_runtime` as an installation requirement, not a special reason to demand a Mod-specific Adapter. Analyze and plan it through the same Evidence, Context, Method, and Proposal flow.
+
+M2 can execute bounded file-tree operations. A loader distribution that requires its bundled installer must stop with `OPERATION_CAPABILITY_MISSING` until M3 provides controlled `run_bundled_installer`. Preserve the Bundle, Evidence, and Context so the workflow can resume.

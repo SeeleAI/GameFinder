@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import {
   mkdir,
@@ -176,6 +177,16 @@ describe("Phase 6B-4 installation MCP", () => {
     const names = listed.tools.map((tool) => tool.name);
     expect(names).toEqual(
       expect.arrayContaining([
+        "probe_game_context",
+        "get_game_context",
+        "prepare_install_evidence",
+        "get_install_evidence",
+        "query_install_methods",
+        "submit_install_proposal",
+        "get_install_proposal",
+        "freeze_install_plan",
+        "get_agentic_install_plan",
+        "apply_agentic_install_plan",
         "list_game_profiles",
         "detect_game_installs",
         "probe_game_install",
@@ -199,6 +210,17 @@ describe("Phase 6B-4 installation MCP", () => {
     expect(Object.keys(applyTool?.inputSchema.properties ?? {})).toEqual([
       "planId",
     ]);
+    const agenticApplyTool = listed.tools.find(
+      (tool) => tool.name === "apply_agentic_install_plan",
+    );
+    expect(agenticApplyTool?.inputSchema).toMatchObject({
+      type: "object",
+      properties: { planId: expect.any(Object) },
+      required: ["planId"],
+    });
+    expect(
+      Object.keys(agenticApplyTool?.inputSchema.properties ?? {}),
+    ).toEqual(["planId"]);
 
     const inspected = await client.callTool({
       name: "inspect_mod_archive",
@@ -295,6 +317,156 @@ describe("Phase 6B-4 installation MCP", () => {
       passed: true,
       staticVerification: { state: "passed" },
       runtimeVerification: { state: "not-run" },
+    });
+  });
+
+  it("runs the Agentic V2 file workflow through MCP without a profile or Adapter match", async () => {
+    const fixture = await createInstallFixture();
+    service = createNexusMcpServer(
+      new NexusClient("fake-api-key"),
+      unusedBrowser(),
+      { managerRoot: fixture.managerRoot },
+    );
+    client = new Client({ name: "install-v2-mcp-test", version: "0.1.0" });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      service.server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    const probed = await client.callTool({
+      name: "probe_game_context",
+      arguments: {
+        gameRoot: fixture.gameRoot,
+        gameId: "stardew-valley-unregistered",
+        gameName: "Stardew Valley Test Context",
+        nexusDomainName: "stardewvalley",
+        operatingSystem: "win32",
+        anchorPaths: ["Stardew Valley.exe"],
+        writableRoots: ["Mods"],
+        protectedRoots: ["Content"],
+        liveModRoots: ["Mods"],
+      },
+    });
+    expect(probed.isError).not.toBe(true);
+    const gameContextId = (
+      probed.structuredContent as { context: { gameContextId: string } }
+    ).context.gameContextId;
+
+    const prepared = await client.callTool({
+      name: "prepare_install_evidence",
+      arguments: {
+        archivePath: fixture.archivePath,
+        receiptPath: fixture.receiptPath,
+        gameContextId,
+      },
+    });
+    expect(prepared.isError).not.toBe(true);
+    const preparedContent = prepared.structuredContent as {
+      evidence: {
+        evidencePackId: string;
+        packageUnits: Array<{
+          packageUnitId: string;
+          packageRoot: string;
+        }>;
+      };
+    };
+    const evidencePackId = preparedContent.evidence.evidencePackId;
+    const packageUnit = preparedContent.evidence.packageUnits[0];
+    if (!packageUnit) throw new Error("Expected one package unit.");
+
+    const queried = await client.callTool({
+      name: "query_install_methods",
+      arguments: { evidencePackId, gameContextId },
+    });
+    expect(queried.structuredContent).toMatchObject({
+      ok: true,
+      candidates: [],
+      requiresAgentResearch: true,
+    });
+
+    const proposed = await client.callTool({
+      name: "submit_install_proposal",
+      arguments: {
+        evidencePackId,
+        gameContextId,
+        draft: {
+          strategyBinding: {
+            origin: "agent_proposal",
+            methodId: null,
+            methodRevision: null,
+            methodHash: null,
+            legacyAdapterBinding: null,
+          },
+          selection: {
+            packageUnitId: packageUnit.packageUnitId,
+            packageRoot: packageUnit.packageRoot,
+            selectedComponents: [],
+          },
+          operations: [
+            {
+              operationId: randomUUID(),
+              kind: "install_tree",
+              sourceRelativePath: packageUnit.packageRoot,
+              targetRelativePath: "Mods/SkipFishingMinigame",
+              ownershipMode: "exclusive_tree",
+            },
+          ],
+          preconditions: [],
+          verificationRequirements: [],
+          unresolvedChoices: [],
+          risk: {
+            level: "low",
+            reasons: ["Self-contained package under the declared Mods root."],
+          },
+        },
+      },
+    });
+    expect(proposed.isError).not.toBe(true);
+    const proposalId = (
+      proposed.structuredContent as { proposal: { proposalId: string } }
+    ).proposal.proposalId;
+
+    const frozen = await client.callTool({
+      name: "freeze_install_plan",
+      arguments: { proposalId },
+    });
+    expect(frozen.isError).not.toBe(true);
+    expect(frozen.structuredContent).toMatchObject({
+      ok: true,
+      plan: {
+        approval: { requiresExplicitConfirmation: true },
+        operations: [
+          {
+            kind: "install_tree",
+            targetRelativePath: "Mods/SkipFishingMinigame",
+          },
+        ],
+      },
+    });
+    expect(
+      await stat(
+        path.join(fixture.gameRoot, "Mods", "SkipFishingMinigame"),
+      ).catch(() => null),
+    ).toBeNull();
+    const planId = (
+      frozen.structuredContent as { plan: { planId: string } }
+    ).plan.planId;
+
+    const applied = await client.callTool({
+      name: "apply_agentic_install_plan",
+      arguments: { planId },
+    });
+    expect(applied.isError).not.toBe(true);
+    expect(applied.structuredContent).toMatchObject({
+      ok: true,
+      planId,
+      installation: {
+        state: "runtime_unverified",
+        methodExecutorId: "agentic-v2-file-method",
+        staticVerification: { state: "passed" },
+      },
     });
   });
 

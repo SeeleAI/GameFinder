@@ -1,46 +1,36 @@
 # Installation Engine Contract
 
-## Runtime objects
-
-The installation backend owns six distinct objects:
+## V2 planning objects
 
 | Object | Purpose | Lifetime |
 |---|---|---|
-| Package Analysis | Identifies package units, roots, identities, entry files, dependencies, and ambiguity. | Analysis/planning |
-| Install Plan | Freezes exact source, instance, Adapter, target operations, conflicts, and pre-state. | Review/apply/audit |
-| Transaction Journal | Records operation intent, writes, backups, verification, rollback, and recovery state. | Transaction/audit |
-| Installation Record | Records what was actually committed and which files are owned. | Durable |
-| Backup Object | Stores a verified preimage needed for recovery or later uninstall. | While referenced |
+| Evidence Pack | Immutable source, Archive, package, dependency, and provenance evidence. | Planning/audit |
+| Dynamic Game Context | Evidence-backed game identity, exact root, loaders, processes, and path boundaries. | Planning/audit |
+| Installation Method | Reusable, revisioned installation knowledge. | Durable |
+| Install Proposal | One evidence-bound candidate strategy produced by a Method or Agent. | Planning/audit |
+| Install Plan V2 | Frozen operations, pre-state, conflicts, risk, reversibility, and approval digest. | Review/apply/audit |
+
+## Retained transaction objects
+
+| Object | Purpose | Lifetime |
+|---|---|---|
+| Transaction Journal | Records intent, writes, backups, verification, rollback, and recovery. | Transaction/audit |
+| Installation Record | Records what actually committed and which paths are owned. | Durable |
+| Backup Object | Stores verified pre-state needed for recovery or uninstall. | While referenced |
 | Current-State Inspection | Compares current disk state with the committed post-state. | Verify/uninstall planning |
 
-These are not a persistent per-Mod Recipe system. Analysis identifies, Plan controls one attempted mutation, Journal recovers incomplete work, and Installation Record is the durable authority.
+These are not persistent per-Mod Recipes. Method captures reusable knowledge; Proposal and Plan control one attempt; Record remains the durable uninstall authority.
 
 ## Invariants
 
-- Archive and receipt paths must be absolute and refer to the same verified Nexus file.
-- The engine supports only declared archive formats and rejects traversal, links, collisions, encryption, and resource-limit violations.
-- Game writes are restricted by a versioned Game Profile.
-- One deterministic Adapter must own planning.
-- A Plan is immutable, hash-bound, expiring, and bound to source hash, staging tree, game instance, Adapter, and target pre-state.
+- Archive and receipt are absolute, hash-verified, and identify the same Nexus file.
+- Dynamic writable roots are evidence-backed and bounded; protected roots cannot be overridden.
+- A missing prewritten Adapter is not a planning failure.
+- Proposal validation is deterministic and cannot write the game.
+- Plan V2 is immutable, expiring, and hash-bound to Evidence, Context, strategy, operations, and pre-state.
 - Apply accepts only `planId`.
-- Apply revalidates the receipt, Archive, Plan, staging, game processes, instance lock, and target pre-state.
-- The engine journals intent before writes and verifies post-state before committing an Installation Record.
-- Failed apply attempts roll back automatically when the pre-state can be proven.
-- Installation Records describe actual outcomes, not merely planned operations.
-- A future uninstall must derive a new plan from the Installation Record and current-state inspection; it must not blindly reverse an old Plan.
+- Game writes run through locks, process guards, backups, journals, verification, and automatic rollback.
+- Installation Records describe actual outcomes.
+- Uninstall derives a new plan from the Record plus current state; it never blindly reverses an old Plan.
 
-## Confirmation
-
-Inspection and probing are read-only. Planning writes manager-owned state but not the game. Applying writes the game and requires explicit approval of the returned plan summary.
-
-Approval must refer to the current `planId` or unmistakably to the plan just displayed. Regenerate and re-review expired or stale plans.
-
-## Forbidden substitutions
-
-Never bypass the engine with:
-
-- Shell or generic filesystem copy, move, extraction, deletion, or overwrite.
-- Agent-authored target paths or operation arrays.
-- Editing Plan, Journal, Record, backup, context, or lock files.
-- Treating a recovery tool as uninstall.
-- Claiming runtime success from static file presence.
+Inspection, context probing, Evidence preparation, Proposal validation, and Plan freezing may write manager-owned state but do not modify the game. Apply requires explicit approval of the exact displayed Plan.

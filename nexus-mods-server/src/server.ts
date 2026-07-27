@@ -11,6 +11,10 @@ import {
   InstallService,
   resolveDefaultManagerRoot
 } from "./install/install-service.js";
+import {
+  AgenticInstallService,
+  installProposalDraftSchema
+} from "./install/v2/index.js";
 import { NexusClient } from "./nexus-client.js";
 import type { QuotaSnapshot, ResponseMeta } from "./types.js";
 import { parseGameRef, parseModRef } from "./url.js";
@@ -100,7 +104,23 @@ function installErrorNextAction(code: string): string | null {
     BUNDLE_INCOMPLETE:
       "Download every planned file and pass each verified receipt before creating the Bundle Manifest.",
     BUNDLE_INVALID:
-      "Use the immutable Bundle Manifest and exact archives/receipts produced by the dependency-aware download workflow."
+      "Use the immutable Bundle Manifest and exact archives/receipts produced by the dependency-aware download workflow.",
+    GAME_CONTEXT_REQUIRED:
+      "Probe the exact game root with probe_game_context, supplying explicit boundaries when no registered legacy profile exists.",
+    EVIDENCE_CONFLICT:
+      "Recreate the Evidence Pack from the exact verified archive and receipt; do not reuse a stale Proposal or Plan.",
+    METHOD_STALE:
+      "Query installation methods again and bind a new Proposal to the current Method revision, or submit a fully evidenced agent proposal.",
+    METHOD_QUARANTINED:
+      "Do not reuse this Method; query alternatives or submit a new bounded agent proposal from current evidence.",
+    METHOD_RESEARCH_REQUIRED:
+      "Inspect the Evidence Pack and Dynamic Game Context, research the package locally, then submit a bounded agent proposal.",
+    PROPOSAL_INVALID:
+      "Correct the Proposal so its package selection, source paths, target roots, ownership, and evidence bindings are exact.",
+    USER_CHOICE_REQUIRED:
+      "Resolve every reported choice with the user, then submit a new Proposal with no unresolved choices.",
+    OPERATION_CAPABILITY_MISSING:
+      "This MCP build cannot safely execute the proposed operation yet; preserve the evidence and stop before modifying the game."
   };
   return actions[code] ?? null;
 }
@@ -134,12 +154,19 @@ export function createNexusMcpServer(
   const sessionBackends = new Map<string, "native" | "persistent_chromium">();
   const managerRoot = options.managerRoot ?? resolveDefaultManagerRoot();
   let installServicePromise: Promise<InstallService> | undefined;
+  let agenticInstallServicePromise: Promise<AgenticInstallService> | undefined;
   let downloadBundleServicePromise: Promise<DownloadBundleService> | undefined;
   const installs = (): Promise<InstallService> => {
     installServicePromise ??= InstallService.create(
       { managerRoot }
     );
     return installServicePromise;
+  };
+  const agenticInstalls = (): Promise<AgenticInstallService> => {
+    agenticInstallServicePromise ??= installs().then((legacy) =>
+      AgenticInstallService.create({ managerRoot, legacy })
+    );
+    return agenticInstallServicePromise;
   };
   const downloadBundles = (): Promise<DownloadBundleService> => {
     downloadBundleServicePromise ??= DownloadBundleService.create({
@@ -152,7 +179,7 @@ export function createNexusMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and deterministic local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. Installation accepts an exact archive/receipt or a verified Bundle handoff and requires an exact game root: inspect and probe, show each frozen Install Plan, then call apply_mod_install with only planId after explicit approval. Never replace MCP installation tools with shell copy, extraction, or deletion. rollback_mod_install recovers incomplete transactions; it is not uninstall."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: probe_game_context, prepare_install_evidence, query_install_methods, submit_install_proposal, freeze_install_plan, show the immutable plan, and call apply_agentic_install_plan with only planId after explicit approval. V2 may use a verified learned Method, a legacy Adapter candidate, or a bounded Agent proposal; lack of a prewritten Adapter is not itself a blocker. Never replace MCP installation tools with shell copy, extraction, or deletion. rollback_mod_install recovers incomplete transactions; it is not uninstall."
     }
   );
 
@@ -825,6 +852,404 @@ export function createNexusMcpServer(
           receipt,
           meta: meta("local", client.lastQuota, ["Archive was not extracted, executed, or installed."])
         });
+      })
+  );
+
+  server.registerTool(
+    "probe_game_context",
+    {
+      title: "Probe a Dynamic Game Context",
+      description:
+        "Create an immutable Contract V2 Dynamic Game Context for one exact game root. Use legacyProfileId when a registered profile exists; otherwise provide explicit game identity, anchor paths, and bounded writable roots. Does not modify game files.",
+      inputSchema: {
+        gameRoot: z.string().min(3).describe("Exact absolute game installation root."),
+        legacyProfileId: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Optional registered V1 profile to use as verified context evidence."),
+        gameId: z.string().trim().min(1).optional(),
+        gameName: z.string().trim().min(1).optional(),
+        nexusDomainName: z.string().trim().min(1).optional(),
+        gameVersion: z.string().trim().min(1).optional(),
+        platform: z
+          .enum(["steam", "gog", "epic", "xbox", "manual", "unknown"])
+          .optional(),
+        platformAppId: z.string().trim().min(1).optional(),
+        operatingSystem: z.enum(["win32", "linux", "darwin"]).optional(),
+        anchorPaths: z
+          .array(z.string().trim().min(1))
+          .optional()
+          .describe("Game-root-relative files or directories that prove this instance."),
+        writableRoots: z
+          .array(z.string().trim().min(1))
+          .optional()
+          .describe("Game-root-relative roots that an approved plan may modify."),
+        protectedRoots: z.array(z.string().trim().min(1)).optional(),
+        liveModRoots: z.array(z.string().trim().min(1)).optional(),
+        knownProcessNames: z.array(z.string().trim().min(1)).optional(),
+        lockSensitiveProcessNames: z.array(z.string().trim().min(1)).optional()
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input) =>
+      safe(async () => {
+        const service = await agenticInstalls();
+        const context =
+          input.legacyProfileId !== undefined
+            ? await service.probeGameContext({
+                gameRoot: input.gameRoot,
+                legacyProfileId: input.legacyProfileId
+              })
+            : await service.probeGameContext({
+                gameRoot: input.gameRoot,
+                gameId:
+                  input.gameId ??
+                  (() => {
+                    throw new NexusError(
+                      "GAME_CONTEXT_REQUIRED",
+                      "Explicit game context requires gameId."
+                    );
+                  })(),
+                gameName:
+                  input.gameName ??
+                  (() => {
+                    throw new NexusError(
+                      "GAME_CONTEXT_REQUIRED",
+                      "Explicit game context requires gameName."
+                    );
+                  })(),
+                ...(input.nexusDomainName === undefined
+                  ? {}
+                  : { nexusDomainName: input.nexusDomainName }),
+                ...(input.gameVersion === undefined
+                  ? {}
+                  : { gameVersion: input.gameVersion }),
+                ...(input.platform === undefined ? {} : { platform: input.platform }),
+                ...(input.platformAppId === undefined
+                  ? {}
+                  : { platformAppId: input.platformAppId }),
+                ...(input.operatingSystem === undefined
+                  ? {}
+                  : { operatingSystem: input.operatingSystem }),
+                anchorPaths: input.anchorPaths ?? [],
+                writableRoots: input.writableRoots ?? [],
+                ...(input.protectedRoots === undefined
+                  ? {}
+                  : { protectedRoots: input.protectedRoots }),
+                ...(input.liveModRoots === undefined
+                  ? {}
+                  : { liveModRoots: input.liveModRoots }),
+                ...(input.knownProcessNames === undefined
+                  ? {}
+                  : { knownProcessNames: input.knownProcessNames }),
+                ...(input.lockSensitiveProcessNames === undefined
+                  ? {}
+                  : {
+                      lockSensitiveProcessNames: input.lockSensitiveProcessNames
+                    })
+              });
+        return ok(
+          `Created Dynamic Game Context ${context.gameContextId} for ${context.game.name}.`,
+          {
+            ok: true,
+            context,
+            meta: meta("local", null, [
+              "This captures bounded game paths and evidence; it does not authorize installation."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "get_game_context",
+    {
+      title: "Get a Dynamic Game Context",
+      description:
+        "Read and hash-verify one immutable Contract V2 Dynamic Game Context.",
+      inputSchema: {
+        gameContextId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ gameContextId }) =>
+      safe(async () => {
+        const context = await (await agenticInstalls()).getGameContext(gameContextId);
+        return ok(`Retrieved Dynamic Game Context ${gameContextId}.`, {
+          ok: true,
+          context,
+          meta: meta("local", null)
+        });
+      })
+  );
+
+  server.registerTool(
+    "prepare_install_evidence",
+    {
+      title: "Prepare an installation Evidence Pack",
+      description:
+        "Verify one exact Nexus archive and receipt, inspect its safe inventory and package units, and persist an immutable Contract V2 Evidence Pack. Does not extract into or modify the game.",
+      inputSchema: {
+        archivePath: z.string().min(3),
+        receiptPath: z.string().min(3),
+        gameContextId: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Optional exact Dynamic Game Context to bind as observed evidence.")
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ archivePath, receiptPath, gameContextId }) =>
+      safe(async () => {
+        const evidence = await (
+          await agenticInstalls()
+        ).prepareEvidence({
+          archivePath,
+          receiptPath,
+          ...(gameContextId === undefined ? {} : { gameContextId })
+        });
+        return ok(
+          `Created Evidence Pack ${evidence.evidencePackId} with ${evidence.packageUnits.length} package units.`,
+          {
+            ok: true,
+            evidence,
+            meta: meta("local", null, [
+              "Evidence preparation writes only immutable manager state; the game directory is unchanged."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "get_install_evidence",
+    {
+      title: "Get an installation Evidence Pack",
+      description:
+        "Read and hash-verify one immutable Contract V2 installation Evidence Pack.",
+      inputSchema: {
+        evidencePackId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ evidencePackId }) =>
+      safe(async () => {
+        const evidence = await (await agenticInstalls()).getEvidence(evidencePackId);
+        return ok(`Retrieved Evidence Pack ${evidencePackId}.`, {
+          ok: true,
+          evidence,
+          meta: meta("local", null)
+        });
+      })
+  );
+
+  server.registerTool(
+    "query_install_methods",
+    {
+      title: "Query reusable installation methods",
+      description:
+        "Evaluate current Evidence and Dynamic Game Context against verified Method Store entries and legacy Adapter compatibility providers. An empty result means the Agent should research and submit a bounded Proposal; it does not require new code.",
+      inputSchema: {
+        evidencePackId: z.string().uuid(),
+        gameContextId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ evidencePackId, gameContextId }) =>
+      safe(async () => {
+        const result = await (
+          await agenticInstalls()
+        ).queryMethods({ evidencePackId, gameContextId });
+        return ok(
+          result.candidates.length === 0
+            ? "No reusable installation Method matched; construct an evidence-bounded Agent Proposal."
+            : `Found ${result.candidates.length} installation Method candidates.`,
+          {
+            ok: true,
+            evidencePackId: result.evidence.evidencePackId,
+            gameContextId: result.context.gameContextId,
+            candidates: result.candidates,
+            requiresAgentResearch: result.candidates.length === 0,
+            meta: meta("local", null)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "submit_install_proposal",
+    {
+      title: "Submit a bounded Agent installation Proposal",
+      description:
+        "Validate and persist an immutable Contract V2 Proposal bound to exact Evidence and Game Context hashes. In M2, file-only install_tree operations are executable; bundled installer execution is reserved for M3.",
+      inputSchema: {
+        evidencePackId: z.string().uuid(),
+        gameContextId: z.string().uuid(),
+        draft: installProposalDraftSchema
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ evidencePackId, gameContextId, draft }) =>
+      safe(async () => {
+        const proposal = await (
+          await agenticInstalls()
+        ).submitProposal({ evidencePackId, gameContextId, draft });
+        return ok(
+          `Validated and stored Install Proposal ${proposal.proposalId}.`,
+          {
+            ok: true,
+            proposal,
+            meta: meta("local", null, [
+              "A Proposal is not executable authority; freeze and review an Install Plan first."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "get_install_proposal",
+    {
+      title: "Get an installation Proposal",
+      description:
+        "Read and hash-verify one immutable Contract V2 installation Proposal.",
+      inputSchema: {
+        proposalId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ proposalId }) =>
+      safe(async () => {
+        const proposal = await (await agenticInstalls()).getProposal(proposalId);
+        return ok(`Retrieved Install Proposal ${proposalId}.`, {
+          ok: true,
+          proposal,
+          meta: meta("local", null)
+        });
+      })
+  );
+
+  server.registerTool(
+    "freeze_install_plan",
+    {
+      title: "Freeze a Contract V2 Install Plan",
+      description:
+        "Revalidate exact Proposal, Evidence, archive, game boundaries, operations, conflicts, and reversibility, then freeze an immutable approval digest. Writes only manager staging and plan state; does not modify the game.",
+      inputSchema: {
+        proposalId: z.string().uuid(),
+        ttlMs: z.number().int().min(60_000).max(86_400_000).optional()
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ proposalId, ttlMs }) =>
+      safe(async () => {
+        const plan = await (
+          await agenticInstalls()
+        ).freezePlan({
+          proposalId,
+          ...(ttlMs === undefined ? {} : { ttlMs })
+        });
+        return ok(
+          `Frozen Install Plan ${plan.planId} with ${plan.operations.length} operations; explicit approval is required.`,
+          {
+            ok: true,
+            plan,
+            meta: meta("local", null, [
+              "The game directory is unchanged.",
+              "Show the plan targets, conflicts, risk, reversibility, and approval digest before apply."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "get_agentic_install_plan",
+    {
+      title: "Get a Contract V2 Install Plan",
+      description:
+        "Read and hash-verify one immutable, unexpired Contract V2 Install Plan.",
+      inputSchema: {
+        planId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ planId }) =>
+      safe(async () => {
+        const plan = await (await agenticInstalls()).getPlan(planId);
+        return ok(`Retrieved Contract V2 Install Plan ${planId}.`, {
+          ok: true,
+          plan,
+          meta: meta("local", null)
+        });
+      })
+  );
+
+  server.registerTool(
+    "apply_agentic_install_plan",
+    {
+      title: "Apply one approved Contract V2 Install Plan",
+      description:
+        "Apply one exact, previously reviewed Contract V2 planId through the existing transactional backup, journal, verification, and rollback engine. Accepts no mutable operation fields.",
+      inputSchema: {
+        planId: z.string().uuid()
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ planId }) =>
+      safe(async () => {
+        const result = await (await agenticInstalls()).applyPlan(planId);
+        const applied = result.applied;
+        return ok(
+          `Applied Contract V2 plan ${planId}; static verification passed for installation ${applied.record.installationId}.`,
+          {
+            ok: true,
+            planId,
+            executionBridgePlanId: result.bridgePlanId,
+            installation: {
+              installationId: applied.record.installationId,
+              transactionId: applied.transactionId,
+              state: applied.record.state,
+              methodExecutorId: applied.record.adapterId,
+              sourcePlanId: applied.record.sourcePlanId,
+              package: applied.record.packageSummary,
+              operationOutcomes: applied.record.operationOutcomes,
+              staticVerification: applied.staticVerification,
+              runtimeVerification: applied.record.runtimeVerification
+            },
+            meta: meta("local", null, [
+              "Static verification passed; runtime verification has not run."
+            ])
+          }
+        );
       })
   );
 

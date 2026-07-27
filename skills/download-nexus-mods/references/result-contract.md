@@ -78,4 +78,4 @@ The only future installation inputs produced by this Skill are:
 - File name, bytes, SHA-256, and archive-check result.
 - Preserved dependencies and compatibility warnings.
 
-`install-game-mods` may consume one Archive/receipt pair or a verified Bundle Manifest. It must independently inspect every selected Archive, verify dependency satisfaction and install order, identify the exact game instance and Adapter, display each frozen Install Plan, and obtain approval. Download completion is not installation approval.
+`install-game-mods` may consume one Archive/receipt pair or a verified Bundle Manifest. It must independently inspect every selected Archive, verify dependency satisfaction and install order, build the exact Dynamic Game Context, resolve a verified Method or bounded Agent Proposal, display each frozen Install Plan, and obtain approval. Download completion is not installation approval.

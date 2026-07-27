@@ -7,61 +7,39 @@ Before apply, return:
 ```markdown
 Installation plan ready:
 
-- Mod/package: name, UniqueID, version
+- Mod/package: name, unique ID, version
 - Nexus source: canonical Mod URL and file ID
 - Archive: absolute path and SHA-256
-- Game: profile and exact root
-- Adapter: ID and version
-- Planned writes:
-  - operation kind → target relative path
+- Game: identity and exact root
+- Strategy: verified Method, legacy compatibility provider, or Agent Proposal
+- Planned writes: operation kind and target relative path
 - Conflicts: values or none
-- Dependencies/warnings: values or none
-- Verification: static requirements; runtime support or limitation
-- Plan: planId, expiresAt
+- Risk and reversibility: values
+- Verification: static requirements and runtime limitation
+- Plan: planId, expiresAt, approvalDigest
 
 The game directory has not been changed. Apply this exact plan?
 ```
 
-Do not hide target paths or blocking conflicts. Do not include manager staging, backup, lock, browser Profile, Cookie, or temporary authorization paths.
+Do not hide target paths, unresolved choices, or blocking conflicts. Do not expose browser profiles, cookies, authorization, staging, backup, or lock paths.
 
 ## Successful apply
 
-Accept apply success only when MCP returns an `installationId`, `transactionId`, committed operation outcomes, and passed static verification.
+Accept success only when MCP returns an `installationId`, `transactionId`, committed operation outcomes, and passed static verification. Then call `verify_mod_install(installationId)`.
 
-After `verify_mod_install`, return:
+Report:
 
-```markdown
-Installation completed:
+- Mod/package and exact game root;
+- Installation and transaction IDs;
+- installed targets;
+- static verification result;
+- runtime verification result;
+- warnings.
 
-- Mod/package: name, UniqueID, version
-- Game: profile and exact root
-- Installation ID: value
-- Transaction ID: value
-- Installed targets: relative paths
-- Static verification: passed with summary
-- Runtime verification: passed | failed | not run
-- Warnings: values or none
-```
-
-When runtime verification is not run, add:
-
-```text
-The files are installed and statically verified, but successful in-game loading has not yet been proven.
-```
+When runtime verification is `not-run`, say: “文件已安装并通过静态验证，但尚未证明游戏内成功加载。”
 
 ## Failure
 
-Return:
+Return the stable error code, affected Plan or transaction, whether game writes began, rollback/recovery state, conflicts or missing evidence, and `nextAction`.
 
-- Stable error code and message.
-- Affected plan or transaction ID when available.
-- Whether any game write began.
-- Whether automatic rollback completed.
-- Returned `nextAction`.
-- Any path conflicts, dependency evidence, or recovery requirement.
-
-Never report “installed” after a failed or nonterminal apply. Never expose secrets or internal backup object paths.
-
-## Durable handoff
-
-Treat `installationId` as the durable identity for status, verification, and future uninstall planning. Do not replace it with Archive path, folder name, `planId`, or guessed Mod identity.
+Never report “installed” after failed or nonterminal apply. Treat `installationId` as the durable identity for status, verification, dependency relationships, and future uninstall planning.

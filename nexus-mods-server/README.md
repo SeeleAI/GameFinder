@@ -1,6 +1,6 @@
 # nexus-mods-server
 
-Local STDIO MCP server for Nexus Mods research, metadata, requirements, and explicitly requested downloads.
+Local STDIO MCP server for Nexus Mods research, metadata, requirements, explicitly requested downloads, and evidence-driven transactional installation.
 
 ## Runtime prerequisites
 
@@ -224,6 +224,22 @@ The browser backend is explicit opt-in. Native/NXM remains the default when `bac
 5. Use `cancel_download` to cancel a prepared or active browser session before final verification.
 
 Completed status includes the absolute archive path and a non-secret JSON receipt containing the backend, file identity, byte count, SHA-256, completion time, and archive check. Files are first written under `<outputDirectory>\.nexus-download-staging`, verified through the same finalizer as native downloads, and exposed without overwriting an existing archive or receipt. The backend does not extract, execute, or install the Mod.
+
+## Contract V2 installation workflow
+
+Contract V2 can plan a bounded file-type Mod installation even when the game has no registered Profile and the package has no prewritten Adapter:
+
+1. Call `probe_game_context` for the exact game root. Use `legacyProfileId` when available, or provide explicit game identity, real anchor paths, and narrowly bounded writable/protected roots.
+2. Call `prepare_install_evidence` with the exact Archive, matching Nexus receipt, and `gameContextId`.
+3. Call `query_install_methods`. Reuse a `verified_match`, or derive an evidence-bounded Agent Proposal when no Method matches.
+4. Call `submit_install_proposal`, then `freeze_install_plan`.
+5. Display the returned operations, targets, conflicts, risk, reversibility, approval digest, expiry, and `planId`. The game is still unchanged.
+6. After explicit approval, call `apply_agentic_install_plan` with only that `planId`.
+7. Call `verify_mod_install` with the resulting `installationId`.
+
+The M2 executor supports a selected package tree installed under a declared writable root. It rejects protected paths, stale hashes, unresolved choices, unsupported ownership, and mutable apply arguments. Writes reuse the existing process guard, instance lock, backup, transaction journal, static verification, and rollback engine.
+
+`run_bundled_installer` is part of Contract V2 but is not executable until M3 adds bounded process execution, side-effect observation, and the full dependency/loader orchestration loop. M2 returns `OPERATION_CAPABILITY_MISSING`; this does not require a game- or Mod-specific Adapter.
 
 ## Browser configuration
 

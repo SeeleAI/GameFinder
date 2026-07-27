@@ -1,6 +1,6 @@
 # Phase 6B V2：Agentic Mod 安装与本地经验学习架构
 
-> 状态：架构基线已固定；M1 已实现并通过本地回归，M2–M4 待开发
+> 状态：架构基线已固定；M1、M2 已实现并通过本地回归，M3–M4 待开发
 >
 > 固定日期：2026-07-27
 >
@@ -922,6 +922,17 @@ Uninstall Planner 继续读取：
 - 实现 Method 查询、Proposal 验证和冻结。
 - 用现有文件 Operation 完成“无预编写 Adapter”的沙箱安装。
 - 更新 `install-game-mods` Skill V2。
+
+实施结果（2026-07-27）：
+
+- 新增不可变 `Evidence Pack`、`Dynamic Game Context`、`Install Proposal`、`Install Plan V2` 与 V2→V1 执行桥的持久化 Store，并在每次读取时校验内容哈希。
+- 新增 `probe_game_context`、`prepare_install_evidence`、`query_install_methods`、`submit_install_proposal`、`freeze_install_plan`、`apply_agentic_install_plan` 等 Contract V2 MCP 工具。
+- `Method Resolver` 可同时查询 Method Store 与只读 V1 Compatibility Provider；没有候选 Method 时明确进入 `agent_proposal`，不再返回“必须开发 Adapter”。
+- 新增通用 `agentic-v2-file-method` 兼容执行器。它不参加 V1 匹配，只负责把已通过 V2 Validator 的文件 Operation 交给既有锁、备份、Journal、验证和回滚引擎。
+- M2 Validator 只接受被选 Package Root 到声明 writable root 内的 `install_tree`，拒绝 protected root、`layered_path` 所有权和未实现的 Operation。
+- `install-game-mods` 已切换到 Evidence → Context → Method/Agent Proposal → Plan → 明确审批 → apply-by-ID 的 V2 SOP。
+- 新增端到端测试证明：未注册游戏、无候选 Method、无预编写 Game/Mod Adapter 时，Agent Proposal 可以冻结计划；冻结前不修改游戏；批准后通过事务引擎完成文件型安装和静态验证。
+- `run_bundled_installer` 仍按设计返回 `OPERATION_CAPABILITY_MISSING`，留给 M3 的受控进程执行能力；这不等价于要求开发 Mod 专用 Adapter。
 
 ### M3：受控安装器与依赖闭环
 

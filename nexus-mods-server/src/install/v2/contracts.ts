@@ -478,6 +478,15 @@ export const installProposalSchema = z.object({
   }),
 });
 
+export const installProposalDraftSchema = installProposalSchema.omit({
+  schemaVersion: true,
+  proposalId: true,
+  proposalHash: true,
+  createdAt: true,
+  evidenceBinding: true,
+  gameBinding: true,
+});
+
 export const installPlanV2Schema = z.object({
   schemaVersion,
   planId: z.string().uuid(),
@@ -679,6 +688,24 @@ export function verifyInstallationMethodHash(method: InstallationMethod): boolea
   return hashWithout(method, "methodHash") === method.methodHash;
 }
 
+export function verifyEvidencePackHash(evidence: EvidencePack): boolean {
+  return hashWithout(evidence, "evidencePackHash") === evidence.evidencePackHash;
+}
+
+export function verifyDynamicGameContextHash(
+  context: DynamicGameContext,
+): boolean {
+  return hashWithout(context, "gameContextHash") === context.gameContextHash;
+}
+
+export function verifyInstallProposalHash(proposal: InstallProposal): boolean {
+  return hashWithout(proposal, "proposalHash") === proposal.proposalHash;
+}
+
+export function verifyInstallPlanV2Hash(plan: InstallPlanV2): boolean {
+  return hashWithout(plan, "planHash") === plan.planHash;
+}
+
 export function verifyMethodOutcomeHash(outcome: MethodOutcome): boolean {
   return hashWithout(outcome, "outcomeHash") === outcome.outcomeHash;
 }
@@ -696,6 +723,7 @@ export type MethodOperationTemplate = z.infer<
 >;
 export type InstallationMethod = z.infer<typeof installationMethodSchema>;
 export type InstallProposal = z.infer<typeof installProposalSchema>;
+export type InstallProposalDraft = z.infer<typeof installProposalDraftSchema>;
 export type BundledInstallerOperation = z.infer<
   typeof bundledInstallerOperationSchema
 >;

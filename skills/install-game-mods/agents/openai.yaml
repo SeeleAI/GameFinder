@@ -1,7 +1,7 @@
 interface:
   display_name: "Install Game Mods"
-  short_description: "Install a verified Mod Archive or Bundle"
-  default_prompt: "Use $install-game-mods to verify, plan, and install this downloaded Mod Archive or Bundle."
+  short_description: "Plan and install verified Mods with Agentic V2"
+  default_prompt: "Use $install-game-mods to build evidence, freeze a reviewable plan, and install this verified Mod Archive or Bundle."
 
 policy:
   allow_implicit_invocation: false

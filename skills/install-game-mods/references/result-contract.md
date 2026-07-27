@@ -23,7 +23,7 @@ The game directory has not been changed. Apply this exact plan?
 
 Do not hide target paths, unresolved choices, or blocking conflicts. Do not expose browser profiles, cookies, authorization, staging, backup, or lock paths.
 
-## Successful apply
+## Successful file apply
 
 Accept success only when MCP returns an `installationId`, `transactionId`, committed operation outcomes, and passed static verification. Then call `verify_mod_install(installationId)`.
 
@@ -37,6 +37,12 @@ Report:
 - warnings.
 
 When runtime verification is `not-run`, say: “文件已安装并通过静态验证，但尚未证明游戏内成功加载。”
+
+## Successful controlled-installer apply
+
+Accept success only when `executionKind` is `installer`, the V2 record state is `installed`, static verification passed, and `unexpectedChanges` is empty. Report the installer entry identity and hash, declared roots, observed changes, process exit result, recovery status, Installation/transaction IDs, and refreshed Game Context ID when present.
+
+Do not pass a controlled-installer V2 record to the legacy `verify_mod_install` tool. Do not claim in-game success until a later runtime check proves it.
 
 ## Failure
 

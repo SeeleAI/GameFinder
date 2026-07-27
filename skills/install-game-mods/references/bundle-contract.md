@@ -12,7 +12,7 @@ For each node in `installOrder`:
 
 1. Check whether a current Dynamic Game Context or managed Installation Record proves it satisfied.
 2. Skip only with evidence and record the reason.
-3. Prepare an Evidence Pack and query Methods.
+3. Prepare an Evidence Pack with `bundlePath + bundleNodeId`; do not downgrade it to an unbound Archive input.
 4. Follow `proposalReadiness.recommendedAction`; re-probe a matching registered Profile or stop before Proposal when instructed.
 5. Reuse a verified Method or derive a bounded Agent file Proposal only when permitted.
 6. Freeze, display, approve, apply, and verify as a separate transaction.
@@ -24,4 +24,6 @@ Generate Plans sequentially because earlier dependency writes change filesystem 
 
 Treat `loader_runtime` as an installation requirement, not a special reason to demand a Mod-specific Adapter. Analyze and plan it through the same Evidence, Context, Method, and Proposal flow.
 
-M2 can execute bounded file-tree operations. A loader distribution with no selectable package unit or requiring its bundled installer must stop before Proposal submission and report the `runBundledInstaller` capability snapshot with `OPERATION_CAPABILITY_MISSING`. Preserve the Bundle, Evidence, and Context so M3 can resume with controlled execution.
+M3 recognizes supported hashed installer entries as `executable-installer` package units. Query must return `construct_agent_installer_proposal` before the Agent researches and proposes one controlled process. After a successful loader node, use the refreshed Dynamic Game Context and prepare the next Bundle node; never reuse the loader's pre-install Context for its dependent.
+
+If any earlier required node lacks a successful record, the later node returns `DEPENDENCY_MISSING` and `stop_before_proposal`.

@@ -30,6 +30,8 @@ These are not persistent per-Mod Recipes. Method captures reusable knowledge; Pr
 - Plan V2 is immutable, expiring, and hash-bound to Evidence, Context, strategy, operations, and pre-state.
 - Apply accepts only `planId`.
 - Game writes run through locks, process guards, backups, journals, verification, and automatic rollback.
+- A controlled installer runs only from verified staging through a fixed runtime with no shell, a minimal environment, a timeout, frozen arguments, declared write-root snapshots, and complete game-root side-effect comparison.
+- An undeclared change can never be accepted as success. Declared roots are restored when possible and the record becomes `recovery_required` when out-of-scope state cannot be proven restored.
 - Installation Records describe actual outcomes.
 - Uninstall derives a new plan from the Record plus current state; it never blindly reverses an old Plan.
 

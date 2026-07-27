@@ -387,14 +387,14 @@ describe("Phase 6B-4 installation MCP", () => {
       operationCapabilities: {
         installTree: { state: "available", executableIn: "M2" },
         runBundledInstaller: {
-          state: "unavailable",
-          errorCode: "OPERATION_CAPABILITY_MISSING",
-          plannedFor: "M3",
+          state: "available",
+          executableIn: "M3",
         },
       },
       proposalReadiness: {
         packageUnitCount: 1,
         canSubmitFileProposal: true,
+        canSubmitInstallerProposal: false,
         recommendedAction: "construct_agent_file_proposal",
         blockers: [],
       },

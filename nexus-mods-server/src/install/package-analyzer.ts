@@ -14,7 +14,7 @@ import type {
 } from "./contracts.js";
 import { packageAnalysisSchema } from "./contracts.js";
 
-export const PACKAGE_ANALYZER_VERSION = "package-analyzer@1";
+export const PACKAGE_ANALYZER_VERSION = "package-analyzer@2";
 
 const smapiDependencySchema = z.object({
   UniqueID: z.string().trim().min(1),
@@ -57,6 +57,31 @@ function joinArchivePath(root: string, child: string): string {
 
 function packageUnitId(uniqueId: string, packageRoot: string): string {
   return `package-${sha256CanonicalJson({ uniqueId, packageRoot }).slice(0, 24)}`;
+}
+
+function executableInstallerCandidates(
+  inventory: ArchiveInventory,
+): ReadonlyArray<ArchiveInventory["entries"][number]> {
+  return inventory.entries.filter((entry) => {
+    if (entry.kind !== "file") return false;
+    const basename = path.posix.basename(entry.normalizedPath).toLowerCase();
+    if (!/\.(?:exe|js)$/i.test(basename)) return false;
+    return /(?:^|[-_. ])(?:install(?:er)?|setup)(?:[-_. ]|$)/i.test(basename);
+  });
+}
+
+function installerPackageRoot(
+  inventory: ArchiveInventory,
+  entryPath: string,
+): string {
+  if (
+    inventory.commonTopLevelDirectory &&
+    (entryPath === inventory.commonTopLevelDirectory ||
+      entryPath.startsWith(`${inventory.commonTopLevelDirectory}/`))
+  ) {
+    return inventory.commonTopLevelDirectory;
+  }
+  return parentArchivePath(entryPath);
 }
 
 function manifestDependencies(
@@ -187,7 +212,44 @@ export async function analyzePackageInventory(
     });
   }
 
-  if (manifestEntries.length === 0) {
+  if (packages.length === 0) {
+    const installerEntries = executableInstallerCandidates(inventory);
+    for (const entry of installerEntries) {
+      const packageRoot = installerPackageRoot(
+        inventory,
+        entry.normalizedPath,
+      );
+      const name = path.posix.basename(packageRoot === "." ? entry.normalizedPath : packageRoot);
+      const uniqueId = `bundled-installer:${entry.normalizedPath.toLowerCase()}`;
+      packages.push({
+        packageUnitId: packageUnitId(uniqueId, packageRoot),
+        packageType: "executable-installer",
+        packageRoot,
+        identity: {
+          uniqueId,
+          name,
+          version: null,
+        },
+        entryFiles: [entry.normalizedPath],
+        dependencies: [],
+        positiveSignals: [
+          `Bundled installer candidate ${entry.normalizedPath}.`,
+          "Candidate filename contains a setup/installer signal and uses a supported controlled runtime extension.",
+        ],
+        negativeSignals: [],
+      });
+    }
+    if (installerEntries.length > 1) {
+      ambiguities.push({
+        code: "multiple-package-roots",
+        message:
+          "Multiple bundled installer candidates were found; an exact package unit must be selected.",
+        packageUnitIds: packages.map((unit) => unit.packageUnitId),
+      });
+    }
+  }
+
+  if (manifestEntries.length === 0 && packages.length === 0) {
     ambiguities.push({
       code: "unknown-package-type",
       message: "No supported machine-readable package manifest was found.",

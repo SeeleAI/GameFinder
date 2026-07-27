@@ -553,6 +553,71 @@ export const installPlanV2Schema = z.object({
   preconditionStateHash: sha256,
 });
 
+export const installerExecutionContextSchema = z.object({
+  schemaVersion,
+  planId: z.string().uuid(),
+  planHash: sha256,
+  stagingId: z.string().uuid(),
+  stagingRoot: absolutePath,
+  stagingTreeHash: sha256,
+  createdAt: timestamp,
+});
+
+export const installerInstallationRecordSchema = z.object({
+  schemaVersion,
+  installationId: z.string().uuid(),
+  transactionId: z.string().uuid(),
+  planId: z.string().uuid(),
+  planHash: sha256,
+  evidencePackId: z.string().uuid(),
+  gameContextId: z.string().uuid(),
+  gameRoot: absolutePath,
+  bundle: z
+    .object({
+      bundleId: z.string().uuid(),
+      nodeId: identifier,
+    })
+    .nullable(),
+  state: z.enum([
+    "installed",
+    "rolled_back",
+    "recovery_required",
+    "failed_before_write",
+  ]),
+  process: z.object({
+    runtime: z.enum(["native", "dotnet", "fixed-script-runner"]),
+    entryRelativePath: relativePath,
+    entrySha256: sha256,
+    arguments: z.array(z.string().max(2_000)).max(100),
+    exitCode: z.number().int().nullable(),
+    signal: z.string().max(100).nullable(),
+    timedOut: z.boolean(),
+    stdout: z.string().max(65_536),
+    stderr: z.string().max(65_536),
+  }),
+  declaredRoots: z.array(
+    z.object({
+      root: scopedPathSchema,
+      preState: pathStateSchema,
+      postState: pathStateSchema,
+      backupId: z.string().uuid().nullable(),
+    }),
+  ).max(100),
+  observedChanges: z.array(relativePath).max(200_000),
+  unexpectedChanges: z.array(relativePath).max(200_000),
+  verification: z.object({
+    static: z.enum(["passed", "failed", "not_run", "blocked"]),
+    contextReprobed: z.boolean(),
+  }),
+  reversibilityLevel: z.enum(["full", "bounded", "manual_recovery"]),
+  recovery: z.object({
+    attempted: z.boolean(),
+    completed: z.boolean(),
+    message: z.string().max(2_000).nullable(),
+  }),
+  installedAt: timestamp,
+});
+
 export const methodOutcomeSchema = z
   .object({
     schemaVersion,
@@ -729,6 +794,12 @@ export type BundledInstallerOperation = z.infer<
 >;
 export type InstallOperationV2 = z.infer<typeof installOperationV2Schema>;
 export type InstallPlanV2 = z.infer<typeof installPlanV2Schema>;
+export type InstallerExecutionContext = z.infer<
+  typeof installerExecutionContextSchema
+>;
+export type InstallerInstallationRecord = z.infer<
+  typeof installerInstallationRecordSchema
+>;
 export type MethodOutcome = z.infer<typeof methodOutcomeSchema>;
 export type MethodProviderCandidate = z.infer<
   typeof methodProviderCandidateSchema

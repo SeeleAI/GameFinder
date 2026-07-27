@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Entry, ZipFile } from "yauzl";
 import yauzl from "yauzl";
 
@@ -370,6 +371,110 @@ export async function readZipTextEntry(input: {
             resolve(Buffer.concat(chunks).toString("utf8"));
           })
           .catch(fail);
+      } catch (error) {
+        fail(error);
+      }
+    });
+    zipFile.on("end", () => {
+      fail(
+        new NexusError(
+          "ARCHIVE_UNSUPPORTED",
+          "The selected ZIP inventory entry no longer exists.",
+          { details: { entryPath: input.entry.normalizedPath } },
+        ),
+      );
+    });
+    zipFile.readEntry();
+  });
+}
+
+export async function hashZipFileEntry(input: {
+  archive: ArchiveIdentity;
+  entry: ArchiveInventoryEntry;
+  maxBytes?: number;
+}): Promise<string> {
+  const maxBytes = input.maxBytes ?? DEFAULT_ARCHIVE_INSPECTION_LIMITS.maxSingleEntryBytes;
+  if (input.entry.kind !== "file") {
+    throw new NexusError(
+      "INSTALL_CONTRACT_INVALID",
+      "Only file entries can be hashed.",
+      { details: { entryPath: input.entry.normalizedPath } },
+    );
+  }
+  if (input.entry.uncompressedBytes > maxBytes) {
+    archiveLimit("The requested ZIP entry exceeds its hash limit.", {
+      entryPath: input.entry.normalizedPath,
+      uncompressedBytes: input.entry.uncompressedBytes,
+      maxBytes,
+    });
+  }
+
+  const zipFile = await yauzl.openPromise(input.archive.absolutePath, {
+    autoClose: false,
+    lazyEntries: true,
+    decodeStrings: true,
+    validateEntrySizes: true,
+    strictFileNames: false,
+  });
+  return await new Promise<string>((resolve, reject) => {
+    let settled = false;
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      closeQuietly(zipFile);
+      reject(
+        error instanceof NexusError
+          ? error
+          : new NexusError(
+              "ARCHIVE_UNSUPPORTED",
+              "The ZIP entry could not be hashed.",
+              { cause: error, details: { entryPath: input.entry.normalizedPath } },
+            ),
+      );
+    };
+    zipFile.on("error", fail);
+    zipFile.on("entry", (entry: Entry) => {
+      try {
+        const isDirectory = /[\\/]$/.test(entry.fileName);
+        const normalizedPath = normalizeArchiveEntryPath(entry.fileName, isDirectory);
+        if (normalizedPath !== input.entry.normalizedPath) {
+          zipFile.readEntry();
+          return;
+        }
+        if (isDirectory || entry.isEncrypted() || isUnixSymlink(entry)) {
+          unsafeArchive("The selected ZIP hash entry is not a safe regular file.", {
+            entryPath: entry.fileName,
+          });
+        }
+        void zipFile.openReadStreamPromise(entry).then(async (stream) => {
+          const hash = createHash("sha256");
+          let bytes = 0;
+          for await (const chunk of stream) {
+            const buffer = Buffer.isBuffer(chunk)
+              ? chunk
+              : Buffer.from(chunk as Uint8Array);
+            bytes += buffer.length;
+            if (bytes > maxBytes) {
+              archiveLimit("The ZIP entry exceeded its hash limit while streaming.", {
+                entryPath: entry.fileName,
+                bytes,
+                maxBytes,
+              });
+            }
+            hash.update(buffer);
+          }
+          if (bytes !== input.entry.uncompressedBytes) {
+            unsafeArchive("The ZIP entry size changed while hashing.", {
+              entryPath: entry.fileName,
+              expectedBytes: input.entry.uncompressedBytes,
+              actualBytes: bytes,
+            });
+          }
+          if (settled) return;
+          settled = true;
+          closeQuietly(zipFile);
+          resolve(hash.digest("hex"));
+        }).catch(fail);
       } catch (error) {
         fail(error);
       }

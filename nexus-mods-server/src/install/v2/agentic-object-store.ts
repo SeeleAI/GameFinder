@@ -4,6 +4,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  readdir,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -15,6 +16,8 @@ import {
   dynamicGameContextSchema,
   evidencePackSchema,
   installPlanV2Schema,
+  installerExecutionContextSchema,
+  installerInstallationRecordSchema,
   installProposalSchema,
   verifyDynamicGameContextHash,
   verifyEvidencePackHash,
@@ -26,6 +29,8 @@ import type {
   EvidencePack,
   InstallPlanV2,
   InstallProposal,
+  InstallerExecutionContext,
+  InstallerInstallationRecord,
 } from "./contracts.js";
 
 const UUID_PATTERN =
@@ -39,6 +44,20 @@ const planBridgeSchema = z.object({
   v1PlanHash: z.string().regex(/^[a-f0-9]{64}$/),
   createdAt: z.string().datetime(),
 });
+
+const bundleNodeCompletionSchema = z.object({
+  schemaVersion: z.literal(2),
+  bundleId: z.string().uuid(),
+  nodeId: z.string().trim().min(1).max(200),
+  planId: z.string().uuid(),
+  installationId: z.string().uuid(),
+  executionKind: z.enum(["file", "installer"]),
+  completedAt: z.string().datetime(),
+});
+
+export type BundleNodeCompletion = z.infer<
+  typeof bundleNodeCompletionSchema
+>;
 
 export type V2PlanBridge = z.infer<typeof planBridgeSchema>;
 
@@ -118,6 +137,9 @@ export class AgenticObjectStore {
   readonly #proposalRoot: string;
   readonly #planRoot: string;
   readonly #bridgeRoot: string;
+  readonly #installerContextRoot: string;
+  readonly #installerRecordRoot: string;
+  readonly #bundleCompletionRoot: string;
 
   private constructor(root: string) {
     this.#evidenceRoot = path.join(root, "evidence");
@@ -125,6 +147,9 @@ export class AgenticObjectStore {
     this.#proposalRoot = path.join(root, "install-proposals");
     this.#planRoot = path.join(root, "plans-v2");
     this.#bridgeRoot = path.join(root, "plan-bridges-v2");
+    this.#installerContextRoot = path.join(root, "installer-contexts-v2");
+    this.#installerRecordRoot = path.join(root, "installer-records-v2");
+    this.#bundleCompletionRoot = path.join(root, "bundle-completions-v2");
   }
 
   static async create(managerRoot: string): Promise<AgenticObjectStore> {
@@ -148,6 +173,9 @@ export class AgenticObjectStore {
       ensureRealDirectory(store.#proposalRoot),
       ensureRealDirectory(store.#planRoot),
       ensureRealDirectory(store.#bridgeRoot),
+      ensureRealDirectory(store.#installerContextRoot),
+      ensureRealDirectory(store.#installerRecordRoot),
+      ensureRealDirectory(store.#bundleCompletionRoot),
     ]);
     return store;
   }
@@ -272,6 +300,115 @@ export class AgenticObjectStore {
         { cause: error, details: { v2PlanId } },
       );
     }
+  }
+
+  async saveInstallerContext(
+    context: InstallerExecutionContext,
+  ): Promise<InstallerExecutionContext> {
+    const parsed = installerExecutionContextSchema.parse(context);
+    await publish(this.#path(this.#installerContextRoot, parsed.planId), parsed);
+    return parsed;
+  }
+
+  async getInstallerContext(
+    planId: string,
+  ): Promise<InstallerExecutionContext> {
+    try {
+      return installerExecutionContextSchema.parse(
+        JSON.parse(
+          await readFile(this.#path(this.#installerContextRoot, planId), "utf8"),
+        ) as unknown,
+      );
+    } catch (error) {
+      throw new NexusError(
+        "PLAN_STALE",
+        "Controlled-installer execution context is missing or invalid.",
+        { cause: error, details: { planId } },
+      );
+    }
+  }
+
+  async saveInstallerRecord(
+    record: InstallerInstallationRecord,
+  ): Promise<InstallerInstallationRecord> {
+    const parsed = installerInstallationRecordSchema.parse(record);
+    await publish(this.#path(this.#installerRecordRoot, parsed.planId), parsed);
+    return parsed;
+  }
+
+  async getInstallerRecordByPlan(
+    planId: string,
+  ): Promise<InstallerInstallationRecord> {
+    try {
+      return installerInstallationRecordSchema.parse(
+        JSON.parse(
+          await readFile(this.#path(this.#installerRecordRoot, planId), "utf8"),
+        ) as unknown,
+      );
+    } catch (error) {
+      throw new NexusError(
+        "NOT_FOUND",
+        "Controlled-installer Installation Record was not found.",
+        { cause: error, details: { planId } },
+      );
+    }
+  }
+
+  async listInstallerRecordsByBundle(
+    bundleId: string,
+  ): Promise<ReadonlyArray<InstallerInstallationRecord>> {
+    assertUuid(bundleId, "bundleId");
+    const records: InstallerInstallationRecord[] = [];
+    for (const name of await readdir(this.#installerRecordRoot)) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const record = installerInstallationRecordSchema.parse(
+          JSON.parse(
+            await readFile(path.join(this.#installerRecordRoot, name), "utf8"),
+          ) as unknown,
+        );
+        if (record.bundle?.bundleId === bundleId) records.push(record);
+      } catch {
+        // Corrupt records remain isolated and are surfaced by exact lookup.
+      }
+    }
+    return records.sort((left, right) =>
+      left.installedAt.localeCompare(right.installedAt),
+    );
+  }
+
+  async saveBundleNodeCompletion(
+    completion: BundleNodeCompletion,
+  ): Promise<BundleNodeCompletion> {
+    const parsed = bundleNodeCompletionSchema.parse(completion);
+    await publish(
+      this.#path(this.#bundleCompletionRoot, parsed.planId),
+      parsed,
+    );
+    return parsed;
+  }
+
+  async listBundleNodeCompletions(
+    bundleId: string,
+  ): Promise<ReadonlyArray<BundleNodeCompletion>> {
+    assertUuid(bundleId, "bundleId");
+    const completions: BundleNodeCompletion[] = [];
+    for (const name of await readdir(this.#bundleCompletionRoot)) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const completion = bundleNodeCompletionSchema.parse(
+          JSON.parse(
+            await readFile(path.join(this.#bundleCompletionRoot, name), "utf8"),
+          ) as unknown,
+        );
+        if (completion.bundleId === bundleId) completions.push(completion);
+      } catch {
+        // Corrupt completion objects remain isolated from valid records.
+      }
+    }
+    return completions.sort((left, right) =>
+      left.completedAt.localeCompare(right.completedAt),
+    );
   }
 
   #path(root: string, id: string): string {

@@ -1,6 +1,6 @@
 # Phase 6B V2：Agentic Mod 安装与本地经验学习架构
 
-> 状态：架构基线已固定；M1、M2 已实现并通过本地回归，M3–M4 待开发
+> 状态：架构基线已固定；M1–M3 已实现并通过本地回归，M4 待开发
 >
 > 固定日期：2026-07-27
 >
@@ -947,6 +947,19 @@ M2 独立 Session 收尾修正（2026-07-27）：
 - 实现 `run_bundled_installer` 通用能力。
 - 增加进程约束、副作用观察、快照和恢复测试。
 - 让 Bundle 中 Loader Runtime 与普通 Mod 使用同一编排流程。
+
+实施结果（2026-07-28）：
+
+- Package Analyzer 可从无 manifest 的 ZIP 中识别高信号 `.exe` / `.js` bundled installer，生成 `executable-installer` Package Unit；Evidence Collector 只对被识别的候选入口流式计算 SHA-256，避免 Agent 虚构入口或 hash。
+- `query_install_methods` 已将 `run_bundled_installer` 标记为 M3 可用，并以 `construct_agent_installer_proposal`、`canSubmitInstallerProposal` 暴露稳定 readiness；真正没有 Package Unit 或存在未满足 Bundle 前序依赖时仍返回 `stop_before_proposal`。
+- M3 Validator 只接受单个安装器 Operation，强制 Evidence 中的精确 entry/hash、固定 runtime、`minimal` 环境、高风险分类、至少一个 postcondition，以及带真实 Evidence/Context ID 的最小声明写入根；protected root 永远不可声明。
+- Freeze 会再次验证 Archive、staging entry hash 与工作目录，自动抓取声明根的 `preStateSnapshots` 和 Plan precondition hash，并将完整进程参数、允许退出码、timeout、冲突、可逆性和 approval digest 冻结进不可变 Plan。
+- Controlled Installer Engine 使用无 shell 子进程、最小环境、固定参数、timeout/process-tree 终止、实例锁和敏感进程检查；执行前为所有既有声明根创建内容寻址备份。
+- 引擎在进程前后比较完整 game-root 文件树。未声明变更不能成为成功结果：声明根会尽可能恢复，无法证明 game-root 已完整恢复时写入 V2 Installation Record 的 `recovery_required`。
+- 新增持久化 installer journal。服务重启或进程中断后不会静默重跑同一 Plan；后续 apply 会根据 Journal 恢复声明根，并在副作用观察不完整时保持 `recovery_required`。
+- `prepare_install_evidence` 可直接接收 `bundlePath + bundleNodeId`，由服务器验证 Bundle/receipt/Archive/hash 和 `installOrder`，不再要求 Agent 手工抄出 Archive 路径。成功的 Loader Runtime Record 会自动满足后续节点；未满足前序节点返回 `DEPENDENCY_MISSING`。
+- 注册 Game Profile 的 Loader Runtime 安装成功后会重新 probe Dynamic Game Context；后续 Bundle 节点因此能看到新 loader 状态，而不是沿用安装前 Context。
+- 定向回归覆盖：正常执行、非零退出恢复既有目录、未声明副作用、持久 Journal 中断恢复、注册 Profile loader 重新探测、Bundle loader Record 接续，以及原 M2 文件型路径不回归。
 
 ### M4：真实学习验收
 

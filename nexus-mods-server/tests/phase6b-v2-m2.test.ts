@@ -174,9 +174,8 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
     expect(queried.operationCapabilities).toMatchObject({
       installTree: { state: "available", executableIn: "M2" },
       runBundledInstaller: {
-        state: "unavailable",
-        errorCode: "OPERATION_CAPABILITY_MISSING",
-        plannedFor: "M3",
+        state: "available",
+        executableIn: "M3",
       },
     });
     expect(queried.proposalReadiness).toMatchObject({
@@ -229,6 +228,10 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
     expect(plan.operations).toHaveLength(1);
 
     const result = await service.applyPlan(plan.planId);
+    expect(result.executionKind).toBe("file");
+    if (result.executionKind !== "file") {
+      throw new Error("Expected the file execution bridge.");
+    }
     expect(result.applied.record.adapterId).toBe(
       AGENTIC_FILE_METHOD_ADAPTER_ID,
     );
@@ -309,7 +312,7 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
     ).rejects.toMatchObject({ code: "PROTECTED_PATH" });
   });
 
-  it("stops before Proposal when Evidence has no package unit and reports the M3 capability boundary", async () => {
+  it("recognizes a bundled installer as an M3 Proposal-ready package unit", async () => {
     const fixture = await createFixture({ installerOnly: true });
     const legacy = await InstallService.create({
       managerRoot: fixture.managerRoot,
@@ -333,28 +336,37 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
       receiptPath: fixture.receiptPath,
       gameContextId: context.gameContextId,
     });
-    expect(evidence.packageUnits).toEqual([]);
+    expect(evidence.packageUnits).toHaveLength(1);
+    const installerUnit = evidence.packageUnits[0];
+    if (!installerUnit) throw new Error("Expected an installer package unit.");
+    expect(installerUnit).toMatchObject({
+      packageType: "executable-installer",
+      packageRoot: "Example Installer",
+      entryFiles: ["Example Installer/internal/windows/Setup.exe"],
+    });
+    const entry = evidence.archive.entries.find(
+      (candidate) =>
+        candidate.relativePath ===
+        "Example Installer/internal/windows/Setup.exe",
+    );
+    expect(entry?.sha256).toMatch(/^[a-f0-9]{64}$/);
+    const installerEvidenceId = evidence.evidence[0]?.evidenceId;
+    if (!installerEvidenceId) throw new Error("Expected installer evidence.");
 
     const queried = await service.queryMethods({
       evidencePackId: evidence.evidencePackId,
       gameContextId: context.gameContextId,
     });
     expect(queried.proposalReadiness).toMatchObject({
-      packageUnitCount: 0,
+      packageUnitCount: 1,
       canSubmitFileProposal: false,
-      recommendedAction: "stop_before_proposal",
-      blockers: expect.arrayContaining([
-        { code: "PACKAGE_UNIT_MISSING", message: expect.any(String) },
-        {
-          code: "OPERATION_CAPABILITY_MISSING",
-          message: expect.any(String),
-        },
-      ]),
+      canSubmitInstallerProposal: true,
+      recommendedAction: "construct_agent_installer_proposal",
+      blockers: [],
     });
     expect(queried.operationCapabilities.runBundledInstaller).toMatchObject({
-      state: "unavailable",
-      errorCode: "OPERATION_CAPABILITY_MISSING",
-      plannedFor: "M3",
+      state: "available",
+      executableIn: "M3",
     });
 
     await expect(
@@ -370,8 +382,8 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
             legacyAdapterBinding: null,
           },
           selection: {
-            packageUnitId: "installer-windows",
-            packageRoot: "Example Installer",
+            packageUnitId: installerUnit.packageUnitId,
+            packageRoot: installerUnit.packageRoot,
             selectedComponents: ["windows"],
           },
           operations: [
@@ -383,7 +395,7 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
                 relativePath:
                   "Example Installer/internal/windows/Setup.exe",
                 runtime: "native",
-                sha256: "a".repeat(64),
+                sha256: entry?.sha256 ?? "a".repeat(64),
               },
               arguments: [],
               workingDirectory: "Example Installer",
@@ -391,7 +403,11 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
               timeoutMs: 300_000,
               allowedExitCodes: [0],
               declaredWriteRoots: [
-                { scope: "game_root", path: "Mods", evidenceIds: [] },
+                {
+                  scope: "game_root",
+                  path: "Mods",
+                  evidenceIds: [installerEvidenceId],
+                },
               ],
               postConditions: [
                 {
@@ -415,7 +431,14 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
           },
         },
       }),
-    ).rejects.toMatchObject({ code: "OPERATION_CAPABILITY_MISSING" });
+    ).resolves.toMatchObject({
+      operations: [
+        {
+          kind: "run_bundled_installer",
+          entry: { sha256: entry?.sha256 },
+        },
+      ],
+    });
   });
 
   it("advises re-probing with a registered legacy profile instead of keeping invented identity", async () => {

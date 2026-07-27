@@ -28,14 +28,14 @@ Read:
 1. Call `list_game_profiles`, then establish a Dynamic Game Context. Use a matching `legacyProfileId`; use explicit identity only for an unregistered game.
 2. Prepare an immutable Evidence Pack for each verified Archive.
 3. Query reusable installation Methods and obey `proposalReadiness.recommendedAction`.
-4. Submit a Proposal only when the result permits it. Never invent a package unit. If no Method matches but a file Proposal is ready, research only what is needed and submit a bounded Agent Proposal. Do not ask the user to develop an Adapter.
+4. Submit a Proposal only when the result permits it. Never invent a package unit. If no Method matches, research only what is needed and submit either a bounded file Proposal or one controlled-installer Proposal according to `recommendedAction`. Do not ask the user to develop an Adapter.
 5. Freeze a Plan and show its source, selected package, exact game root, strategy, target operations, conflicts, risk, reversibility, approval digest, `planId`, and expiry.
 6. Stop for explicit approval of that exact Plan.
-7. Apply with only `planId`, then verify the resulting `installationId`.
+7. Apply with only `planId`. For a file execution, verify the resulting legacy `installationId`; for a controlled installer, inspect its V2 Installation Record, static verification, observed changes, recovery state, and refreshed Game Context.
 
 For Bundles, process required dependencies in `installOrder`. Freeze and approve one current Plan at a time; do not preapprove later nodes.
 
-M2 executes bounded file-tree installation without a prewritten Adapter. If query results show no selectable package unit or unavailable `run_bundled_installer`, stop before Proposal submission, report `OPERATION_CAPABILITY_MISSING` from the capability snapshot, and preserve the Evidence/Context. Controlled installer execution arrives in M3; this is not a request to write a Mod-specific Adapter.
+M2 executes bounded file-tree installation without a prewritten Adapter. M3 additionally executes one evidence-hashed bundled installer through a fixed runtime, minimal environment, timeout, declared write roots, pre-state snapshots, backups, complete game-root side-effect observation, and bounded recovery. A controlled-installer Proposal is always high risk and must declare the smallest justified write roots and required postconditions.
 
 ## Hard boundaries
 

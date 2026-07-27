@@ -22,6 +22,8 @@ import {
   preconditionStateHash,
 } from "../core/conflict-detector.js";
 import { StagingManager } from "../core/staging-manager.js";
+import { inspectPathState } from "../core/tree-state.js";
+import { hashZipFileEntry } from "../archive-inspector.js";
 import type { ApplyInstallResult } from "../core/transaction-engine.js";
 import { sha256File } from "../file-hash.js";
 import type {
@@ -41,6 +43,7 @@ import {
   AGENTIC_FILE_METHOD_ADAPTER_VERSION,
 } from "./agentic-file-method-adapter.js";
 import { AgenticObjectStore } from "./agentic-object-store.js";
+import { ControlledInstallerEngine } from "./controlled-installer-engine.js";
 import {
   computeDynamicGameContextHash,
   computeEvidencePackHash,
@@ -55,11 +58,13 @@ import {
 } from "./contracts.js";
 import type {
   DynamicGameContext,
+  BundledInstallerOperation,
   EvidencePack,
   EvidenceReference,
   InstallPlanV2,
   InstallProposal,
   InstallProposalDraft,
+  InstallerInstallationRecord,
   MethodProviderCandidate,
   MethodSignal,
 } from "./contracts.js";
@@ -114,23 +119,25 @@ export interface AgenticMethodQueryResult {
     };
     runBundledInstaller: {
       operationKind: "run_bundled_installer";
-      state: "unavailable";
-      errorCode: "OPERATION_CAPABILITY_MISSING";
-      plannedFor: "M3";
+      state: "available";
+      executableIn: "M3";
     };
   };
   proposalReadiness: {
     packageUnitCount: number;
     canSubmitFileProposal: boolean;
+    canSubmitInstallerProposal: boolean;
     recommendedAction:
       | "reprobe_with_legacy_profile"
       | "select_verified_method"
       | "construct_agent_file_proposal"
+      | "construct_agent_installer_proposal"
       | "stop_before_proposal";
     blockers: ReadonlyArray<{
       code:
         | "REGISTERED_PROFILE_AVAILABLE"
         | "PACKAGE_UNIT_MISSING"
+        | "DEPENDENCY_MISSING"
         | "OPERATION_CAPABILITY_MISSING";
       message: string;
     }>;
@@ -142,7 +149,7 @@ export interface AgenticMethodQueryResult {
   }>;
 }
 
-const M2_OPERATION_CAPABILITIES = {
+const M3_OPERATION_CAPABILITIES = {
   installTree: {
     operationKind: "install_tree",
     state: "available",
@@ -150,9 +157,8 @@ const M2_OPERATION_CAPABILITIES = {
   },
   runBundledInstaller: {
     operationKind: "run_bundled_installer",
-    state: "unavailable",
-    errorCode: "OPERATION_CAPABILITY_MISSING",
-    plannedFor: "M3",
+    state: "available",
+    executableIn: "M3",
   },
 } as const;
 
@@ -197,6 +203,26 @@ function gameRelativeRoots(
         context.instance.operatingSystem,
       ),
     );
+}
+
+function resolveInstallerDeclaredTarget(
+  context: DynamicGameContext,
+  targetRelativePath: string,
+) {
+  const normalized = normalizeManagedRelativePath(
+    targetRelativePath,
+    context.instance.operatingSystem,
+  );
+  return resolveManagedTarget({
+    gameRoot: context.instance.gameRoot,
+    targetRelativePath: normalized,
+    writableRoots: [
+      ...gameRelativeRoots(context, "writableRoots"),
+      normalized,
+    ],
+    protectedRoots: gameRelativeRoots(context, "protectedRoots"),
+    platform: context.instance.operatingSystem,
+  });
 }
 
 function selectedPackage(
@@ -655,6 +681,26 @@ export class AgenticInstallService {
           evidence: dependency.evidence,
         })),
       );
+    const hashedEntryPaths = new Set(
+      inspected.analysis.packages
+        .filter((unit) => unit.packageType === "executable-installer")
+        .flatMap((unit) => unit.entryFiles),
+    );
+    const archiveEntries: EvidencePack["archive"]["entries"][number][] = [];
+    for (const entry of inspected.inventory.entries) {
+      archiveEntries.push({
+        relativePath: entry.normalizedPath,
+        kind: entry.kind,
+        bytes: entry.kind === "file" ? entry.uncompressedBytes : null,
+        sha256:
+          entry.kind === "file" && hashedEntryPaths.has(entry.normalizedPath)
+            ? await hashZipFileEntry({
+                archive: inspected.inventory.archive,
+                entry,
+              })
+            : null,
+      });
+    }
     const withoutHash: Omit<EvidencePack, "evidencePackHash"> = {
       schemaVersion: 2,
       evidencePackId: randomUUID(),
@@ -673,12 +719,7 @@ export class AgenticInstallService {
       archive: {
         inventoryHash: sha256CanonicalJson(inspected.inventory),
         entryCount: inspected.inventory.entries.length,
-        entries: inspected.inventory.entries.map((entry) => ({
-          relativePath: entry.normalizedPath,
-          kind: entry.kind,
-          bytes: entry.kind === "file" ? entry.uncompressedBytes : null,
-          sha256: null,
-        })),
+        entries: archiveEntries,
       },
       packageUnits: inspected.analysis.packages,
       dependencies,
@@ -700,6 +741,25 @@ export class AgenticInstallService {
 
   async getEvidence(evidencePackId: string): Promise<EvidencePack> {
     return await this.#objects.getEvidence(evidencePackId);
+  }
+
+  async getSatisfiedBundleNodeIds(bundleId: string): Promise<string[]> {
+    const [records, completions] = await Promise.all([
+      this.#objects.listInstallerRecordsByBundle(bundleId),
+      this.#objects.listBundleNodeCompletions(bundleId),
+    ]);
+    return [
+      ...new Set(
+        [
+          ...records.flatMap((record) =>
+            record.state === "installed" && record.bundle !== null
+              ? [record.bundle.nodeId]
+              : [],
+          ),
+          ...completions.map((completion) => completion.nodeId),
+        ],
+      ),
+    ];
   }
 
   async queryMethods(input: {
@@ -835,6 +895,7 @@ export class AgenticInstallService {
       code:
         | "REGISTERED_PROFILE_AVAILABLE"
         | "PACKAGE_UNIT_MISSING"
+        | "DEPENDENCY_MISSING"
         | "OPERATION_CAPABILITY_MISSING";
       message: string;
     }> = [];
@@ -852,32 +913,49 @@ export class AgenticInstallService {
         message:
           "Evidence contains no selectable package unit. Do not invent packageUnitId or packageRoot values.",
       });
-      blockers.push({
-        code: "OPERATION_CAPABILITY_MISSING",
-        message:
-          "If this archive requires its bundled installer, M2 cannot accept or execute that operation; preserve Evidence and stop before Proposal submission.",
-      });
     }
+    const missingDependencies = evidence.dependencies.filter(
+      (dependency) => dependency.required && !dependency.satisfied,
+    );
+    blockers.push(
+      ...missingDependencies.map((dependency) => ({
+        code: "DEPENDENCY_MISSING" as const,
+        message: `Required Bundle dependency ${dependency.nodeId} has not produced a successful Installation Record.`,
+      })),
+    );
+    const installerUnits = evidence.packageUnits.filter(
+      (unit) => unit.packageType === "executable-installer",
+    );
+    const fileUnits = evidence.packageUnits.filter(
+      (unit) => unit.packageType !== "executable-installer",
+    );
     const verifiedCandidate = candidates.some(
       (candidate) => candidate.state === "verified_match",
     );
     const recommendedAction =
       contextAdvisories.length > 0
         ? ("reprobe_with_legacy_profile" as const)
+        : missingDependencies.length > 0
+          ? ("stop_before_proposal" as const)
         : evidence.packageUnits.length === 0
           ? ("stop_before_proposal" as const)
           : verifiedCandidate
             ? ("select_verified_method" as const)
+            : installerUnits.length > 0 && fileUnits.length === 0
+              ? ("construct_agent_installer_proposal" as const)
             : ("construct_agent_file_proposal" as const);
     return {
       evidence,
       context,
       candidates,
-      operationCapabilities: M2_OPERATION_CAPABILITIES,
+      operationCapabilities: M3_OPERATION_CAPABILITIES,
       proposalReadiness: {
         packageUnitCount: evidence.packageUnits.length,
         canSubmitFileProposal:
-          evidence.packageUnits.length > 0 &&
+          fileUnits.length > 0 &&
+          contextAdvisories.length === 0,
+        canSubmitInstallerProposal:
+          installerUnits.length > 0 &&
           contextAdvisories.length === 0,
         recommendedAction,
         blockers,
@@ -907,26 +985,35 @@ export class AgenticInstallService {
         "Evidence Pack is bound to a different Dynamic Game Context.",
       );
     }
-    for (const operation of draft.operations) {
-      if (operation.kind === "run_bundled_installer") {
-        throw new NexusError(
-          "OPERATION_CAPABILITY_MISSING",
-          "M2 accepts the bounded-installer contract but does not execute it before M3.",
-        );
-      }
-      if (operation.kind !== "install_tree") {
-        throw new NexusError(
-          "OPERATION_CAPABILITY_MISSING",
-          `M2 currently freezes install_tree operations; ${operation.kind} remains a later generic capability.`,
-        );
-      }
-    }
     const unit = selectedPackage(evidence, draft.selection.packageUnitId);
     if (draft.selection.packageRoot !== unit.packageRoot) {
       throw new NexusError(
         "PROPOSAL_INVALID",
         "Proposal packageRoot does not match the selected Evidence package unit.",
       );
+    }
+    const installerOperations = draft.operations.filter(
+      (operation) => operation.kind === "run_bundled_installer",
+    );
+    if (
+      installerOperations.length > 0 &&
+      (installerOperations.length !== 1 || draft.operations.length !== 1)
+    ) {
+      throw new NexusError(
+        "PROPOSAL_INVALID",
+        "M3 accepts exactly one controlled installer operation per Proposal.",
+      );
+    }
+    for (const operation of draft.operations) {
+      if (
+        operation.kind !== "install_tree" &&
+        operation.kind !== "run_bundled_installer"
+      ) {
+        throw new NexusError(
+          "OPERATION_CAPABILITY_MISSING",
+          `M3 currently freezes install_tree or run_bundled_installer; ${operation.kind} is unavailable.`,
+        );
+      }
     }
     const binding = draft.strategyBinding;
     if (binding.origin === "agent_proposal") {
@@ -1026,26 +1113,113 @@ export class AgenticInstallService {
     const writableRoots = gameRelativeRoots(context, "writableRoots");
     const protectedRoots = gameRelativeRoots(context, "protectedRoots");
     for (const operation of draft.operations) {
-      if (operation.kind !== "install_tree") continue;
-      if (operation.sourceRelativePath !== unit.packageRoot) {
+      if (operation.kind === "install_tree") {
+        if (operation.sourceRelativePath !== unit.packageRoot) {
+          throw new NexusError(
+            "PROPOSAL_INVALID",
+            "install_tree must use the exact selected package root.",
+          );
+        }
+        if (operation.ownershipMode === "layered_path") {
+          throw new NexusError(
+            "PROPOSAL_INVALID",
+            "install_tree cannot use layered_path ownership in the compatibility executor.",
+          );
+        }
+        resolveManagedTarget({
+          gameRoot: context.instance.gameRoot,
+          targetRelativePath: operation.targetRelativePath,
+          writableRoots,
+          protectedRoots,
+          platform: context.instance.operatingSystem,
+        });
+        continue;
+      }
+      if (unit.packageType !== "executable-installer") {
         throw new NexusError(
           "PROPOSAL_INVALID",
-          "M2 install_tree must use the exact selected package root.",
+          "A controlled installer operation requires an executable-installer package unit.",
         );
       }
-      if (operation.ownershipMode === "layered_path") {
+      const installerOperation = operation as Omit<
+        BundledInstallerOperation,
+        "preStateSnapshots"
+      >;
+      if (!unit.entryFiles.includes(installerOperation.entry.relativePath)) {
+        throw new NexusError(
+          "EVIDENCE_CONFLICT",
+          "Installer entry is not one of the selected package unit's analyzed entry files.",
+        );
+      }
+      const entryEvidence = evidence.archive.entries.find(
+        (entry) => entry.relativePath === installerOperation.entry.relativePath,
+      );
+      if (
+        entryEvidence?.kind !== "file" ||
+        entryEvidence.sha256 === null ||
+        entryEvidence.sha256 !== installerOperation.entry.sha256
+      ) {
+        throw new NexusError(
+          "EVIDENCE_CONFLICT",
+          "Installer entry hash is missing from or differs from the immutable Evidence Pack.",
+        );
+      }
+      const entryExtension = path.posix
+        .extname(installerOperation.entry.relativePath)
+        .toLowerCase();
+      if (
+        (installerOperation.entry.runtime === "native" &&
+          entryExtension !== ".exe") ||
+        (installerOperation.entry.runtime === "fixed-script-runner" &&
+          entryExtension !== ".js")
+      ) {
         throw new NexusError(
           "PROPOSAL_INVALID",
-          "install_tree cannot use layered_path ownership in the M2 compatibility executor.",
+          "Installer entry extension does not match its controlled runtime.",
         );
       }
-      resolveManagedTarget({
-        gameRoot: context.instance.gameRoot,
-        targetRelativePath: operation.targetRelativePath,
-        writableRoots,
-        protectedRoots,
-        platform: context.instance.operatingSystem,
-      });
+      const normalizedWorkingDirectory = normalizeManagedRelativePath(
+        installerOperation.workingDirectory,
+        context.instance.operatingSystem,
+      );
+      if (
+        unit.packageRoot !== "." &&
+        normalizedWorkingDirectory !== unit.packageRoot &&
+        !normalizedWorkingDirectory.startsWith(`${unit.packageRoot}/`)
+      ) {
+        throw new NexusError(
+          "PROPOSAL_INVALID",
+          "Installer workingDirectory must remain inside the selected package root.",
+        );
+      }
+      for (const root of installerOperation.declaredWriteRoots) {
+        if (root.scope !== "game_root") {
+          throw new NexusError(
+            "PROPOSAL_INVALID",
+            "M3 installer write roots must be relative to game_root.",
+          );
+        }
+        const knownEvidenceIds = new Set([
+          ...evidence.evidence.map((reference) => reference.evidenceId),
+          ...context.evidence.map((reference) => reference.evidenceId),
+        ]);
+        if (
+          root.evidenceIds.length === 0 ||
+          root.evidenceIds.some((evidenceId) => !knownEvidenceIds.has(evidenceId))
+        ) {
+          throw new NexusError(
+            "EVIDENCE_INSUFFICIENT",
+            "Every installer write root requires at least one real Evidence or Game Context reference.",
+          );
+        }
+        resolveInstallerDeclaredTarget(context, root.path);
+      }
+      if (draft.risk.level !== "high") {
+        throw new NexusError(
+          "PROPOSAL_INVALID",
+          "A bundled installer Proposal must be classified as high risk.",
+        );
+      }
     }
 
     const withoutHash: Omit<InstallProposal, "proposalHash"> = {
@@ -1151,6 +1325,142 @@ export class AgenticInstallService {
       packageRoot: proposal.selection.packageRoot,
     });
     try {
+      const proposedInstaller = proposal.operations[0];
+      if (
+        proposal.operations.length === 1 &&
+        proposedInstaller?.kind === "run_bundled_installer"
+      ) {
+        const entryAbsolutePath = path.resolve(
+          staged.stagingRoot,
+          ...proposedInstaller.entry.relativePath.split("/"),
+        );
+        const workingDirectoryAbsolutePath = path.resolve(
+          staged.stagingRoot,
+          ...proposedInstaller.workingDirectory.split("/"),
+        );
+        const workingDirectoryInfo = await lstat(
+          workingDirectoryAbsolutePath,
+        ).catch(() => null);
+        if (
+          workingDirectoryInfo === null ||
+          !workingDirectoryInfo.isDirectory() ||
+          workingDirectoryInfo.isSymbolicLink()
+        ) {
+          throw new NexusError(
+            "PROPOSAL_INVALID",
+            "The controlled installer working directory does not exist in verified staging.",
+          );
+        }
+        if (
+          (await sha256File(entryAbsolutePath)) !==
+          proposedInstaller.entry.sha256
+        ) {
+          throw new NexusError(
+            "EVIDENCE_CONFLICT",
+            "The staged installer entry differs from its Evidence hash.",
+          );
+        }
+        const preStateSnapshots = await Promise.all(
+          proposedInstaller.declaredWriteRoots.map(async (root) => {
+            const resolved = resolveInstallerDeclaredTarget(context, root.path);
+            return {
+              root: {
+                ...root,
+                path: resolved.targetRelativePath,
+              },
+              expectedPreState: await inspectPathState(
+                resolved.targetAbsolutePath,
+              ),
+            };
+          }),
+        );
+        const frozenOperation = {
+          ...proposedInstaller,
+          declaredWriteRoots: preStateSnapshots.map((item) => item.root),
+          preStateSnapshots,
+        };
+        const conflicts = preStateSnapshots.map((snapshot) => ({
+          target: snapshot.root.path,
+          kind:
+            snapshot.expectedPreState.kind === "absent"
+              ? "new_path"
+              : "bounded_installer_write",
+          blocking: false,
+          message:
+            snapshot.expectedPreState.kind === "absent"
+              ? "The installer may create this declared path."
+              : "The existing declared path will be backed up before process execution.",
+        }));
+        const frozenPreconditionHash = sha256CanonicalJson(
+          preStateSnapshots.map((snapshot) => ({
+            root: snapshot.root,
+            expectedPreState: snapshot.expectedPreState,
+          })),
+        );
+        const now = new Date();
+        const ttlMs = input.ttlMs ?? 30 * 60_000;
+        const withoutHash: Omit<InstallPlanV2, "planHash"> = {
+          schemaVersion: 2,
+          planId: randomUUID(),
+          status: "planned",
+          createdAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
+          source: {
+            archive: evidence.source.archive,
+            receiptPath: evidence.source.receiptPath,
+            bundleId: evidence.source.bundle?.bundleId ?? null,
+            bundleNodeId: evidence.source.bundle?.nodeId ?? null,
+          },
+          evidenceBinding: proposal.evidenceBinding,
+          gameBinding: {
+            ...proposal.gameBinding,
+            gameRoot: context.instance.gameRoot,
+          },
+          strategyBinding: {
+            ...proposal.strategyBinding,
+            proposalId: proposal.proposalId,
+            proposalHash: proposal.proposalHash,
+          },
+          selection: proposal.selection,
+          operations: [frozenOperation],
+          conflicts,
+          preconditions: proposal.preconditions,
+          verificationRequirements: proposal.verificationRequirements,
+          reversibility: {
+            level: proposedInstaller.reversibilityLevel,
+            backupRequirements: [
+              "Snapshot and back up every declared write root before execution.",
+              "Observe the complete game-root file tree and stop with recovery_required on undeclared changes.",
+            ],
+          },
+          risk: proposal.risk,
+          approval: {
+            requiresExplicitConfirmation: true,
+            approvalDigest: sha256CanonicalJson({
+              proposalId: proposal.proposalId,
+              gameRoot: context.instance.gameRoot,
+              operation: frozenOperation,
+              conflicts,
+            }),
+          },
+          preconditionStateHash: frozenPreconditionHash,
+        };
+        const plan = installPlanV2Schema.parse({
+          ...withoutHash,
+          planHash: computeInstallPlanV2Hash(withoutHash),
+        });
+        await this.#objects.savePlan(plan);
+        await this.#objects.saveInstallerContext({
+          schemaVersion: 2,
+          planId: plan.planId,
+          planHash: plan.planHash,
+          stagingId: staged.stagingId,
+          stagingRoot: staged.stagingRoot,
+          stagingTreeHash: staged.treeHash,
+          createdAt: new Date().toISOString(),
+        });
+        return plan;
+      }
       const operations: InstallOperation[] = proposal.operations.map(
         (operation) => {
           if (operation.kind !== "install_tree") {
@@ -1343,15 +1653,87 @@ export class AgenticInstallService {
     return await this.#objects.getPlan(planId, options);
   }
 
-  async applyPlan(planId: string): Promise<{
-    plan: InstallPlanV2;
-    bridgePlanId: string;
-    applied: ApplyInstallResult;
-  }> {
-    const [plan, bridge] = await Promise.all([
-      this.#objects.getPlan(planId),
-      this.#objects.getBridge(planId),
-    ]);
+  async applyPlan(planId: string): Promise<
+    | {
+        executionKind: "file";
+        plan: InstallPlanV2;
+        bridgePlanId: string;
+        applied: ApplyInstallResult;
+      }
+    | {
+        executionKind: "installer";
+        plan: InstallPlanV2;
+        bridgePlanId: null;
+        record: InstallerInstallationRecord;
+        refreshedGameContext: DynamicGameContext | null;
+      }
+  > {
+    const plan = await this.#objects.getPlan(planId);
+    if (plan.operations[0]?.kind === "run_bundled_installer") {
+      try {
+        await this.#objects.getInstallerRecordByPlan(planId);
+        throw new NexusError(
+          "INSTALL_CONFLICT",
+          "This controlled-installer plan has already been applied.",
+        );
+      } catch (error) {
+        if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") {
+          throw error;
+        }
+      }
+      const [execution, context, engine] = await Promise.all([
+        this.#objects.getInstallerContext(planId),
+        this.#objects.getGameContext(plan.gameBinding.gameContextId),
+        ControlledInstallerEngine.create(this.#managerRoot),
+      ]);
+      let record = await engine.apply({ plan, execution, context });
+      let refreshedGameContext: DynamicGameContext | null = null;
+      if (
+        record.state === "installed" &&
+        context.legacyProfileBinding !== null
+      ) {
+        refreshedGameContext = await this.probeGameContext({
+          gameRoot: context.instance.gameRoot,
+          legacyProfileId: context.legacyProfileBinding.profileId,
+        });
+        record = {
+          ...record,
+          verification: {
+            ...record.verification,
+            contextReprobed: true,
+          },
+        };
+      }
+      await this.#objects.saveInstallerRecord(record);
+      if (
+        record.state === "installed" &&
+        record.bundle !== null
+      ) {
+        await this.#objects.saveBundleNodeCompletion({
+          schemaVersion: 2,
+          bundleId: record.bundle.bundleId,
+          nodeId: record.bundle.nodeId,
+          planId: plan.planId,
+          installationId: record.installationId,
+          executionKind: "installer",
+          completedAt: new Date().toISOString(),
+        });
+      }
+      const stagingManager = await StagingManager.create({
+        managerRoot: this.#managerRoot,
+        gameRoot: context.instance.gameRoot,
+        liveModRoots: gameRelativeRoots(context, "liveModRoots"),
+      });
+      await stagingManager.cleanup(execution.stagingId).catch(() => undefined);
+      return {
+        executionKind: "installer",
+        plan,
+        bridgePlanId: null,
+        record,
+        refreshedGameContext,
+      };
+    }
+    const bridge = await this.#objects.getBridge(planId);
     if (
       bridge.v2PlanHash !== plan.planHash ||
       bridge.v2PlanId !== plan.planId
@@ -1368,10 +1750,26 @@ export class AgenticInstallService {
         "The frozen V1 transaction bridge changed after V2 planning.",
       );
     }
+    const applied = await this.#legacy.apply(bridge.v1PlanId);
+    if (
+      plan.source.bundleId !== null &&
+      plan.source.bundleNodeId !== null
+    ) {
+      await this.#objects.saveBundleNodeCompletion({
+        schemaVersion: 2,
+        bundleId: plan.source.bundleId,
+        nodeId: plan.source.bundleNodeId,
+        planId: plan.planId,
+        installationId: applied.record.installationId,
+        executionKind: "file",
+        completedAt: new Date().toISOString(),
+      });
+    }
     return {
+      executionKind: "file",
       plan,
       bridgePlanId: bridge.v1PlanId,
-      applied: await this.#legacy.apply(bridge.v1PlanId),
+      applied,
     };
   }
 }

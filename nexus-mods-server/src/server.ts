@@ -179,7 +179,7 @@ export function createNexusMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. For an executable file Proposal, call submit_install_proposal, freeze_install_plan, show the immutable plan, and call apply_agentic_install_plan with only planId after explicit approval. V2 may use a verified learned Method, a legacy Adapter candidate, or a bounded Agent proposal; lack of a prewritten Adapter is not itself a blocker. Never replace MCP installation tools with shell copy, extraction, or deletion. rollback_mod_install recovers incomplete transactions; it is not uninstall."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. File-tree and controlled bundled-installer Proposals both require submit_install_proposal, freeze_install_plan, exact plan review, explicit approval, and apply_agentic_install_plan(planId). V2 may use a verified learned Method, a legacy Adapter candidate, or a bounded Agent proposal; lack of a prewritten Adapter is not itself a blocker. Never replace MCP installation tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall."
     }
   );
 
@@ -995,10 +995,12 @@ export function createNexusMcpServer(
     {
       title: "Prepare an installation Evidence Pack",
       description:
-        "Verify one exact Nexus archive and receipt, inspect its safe inventory and package units, and persist an immutable Contract V2 Evidence Pack. Does not extract into or modify the game.",
+        "Verify either one exact Nexus archive/receipt or one exact Bundle Manifest node, inspect its safe inventory and package units, and persist an immutable Contract V2 Evidence Pack. Does not extract into or modify the game.",
       inputSchema: {
-        archivePath: z.string().min(3),
-        receiptPath: z.string().min(3),
+        archivePath: z.string().min(3).optional(),
+        receiptPath: z.string().min(3).optional(),
+        bundlePath: z.string().min(3).optional(),
+        bundleNodeId: z.string().min(1).max(200).optional(),
         gameContextId: z
           .string()
           .uuid()
@@ -1012,14 +1014,100 @@ export function createNexusMcpServer(
         openWorldHint: false
       }
     },
-    async ({ archivePath, receiptPath, gameContextId }) =>
+    async ({ archivePath, receiptPath, bundlePath, bundleNodeId, gameContextId }) =>
       safe(async () => {
-        const evidence = await (
-          await agenticInstalls()
-        ).prepareEvidence({
-          archivePath,
-          receiptPath,
-          ...(gameContextId === undefined ? {} : { gameContextId })
+        const agentic = await agenticInstalls();
+        let resolvedArchivePath: string;
+        let resolvedReceiptPath: string;
+        let bundle:
+          | {
+              bundleId: string;
+              bundlePath: string;
+              bundleHash: string;
+              nodeId: string;
+              installOrderIndex: number;
+            }
+          | undefined;
+        let dependencies:
+          | Array<{
+              nodeId: string;
+              kind: "nexus_mod" | "loader_runtime";
+              required: boolean;
+              satisfied: boolean;
+              evidence: string[];
+            }>
+          | undefined;
+        if (bundlePath !== undefined || bundleNodeId !== undefined) {
+          if (
+            bundlePath === undefined ||
+            bundleNodeId === undefined ||
+            archivePath !== undefined ||
+            receiptPath !== undefined
+          ) {
+            throw new NexusError(
+              "INVALID_INPUT",
+              "Provide either archivePath+receiptPath or bundlePath+bundleNodeId, never a partial or mixed input."
+            );
+          }
+          const manifest = await (await downloadBundles()).inspectBundle(bundlePath);
+          const archive = manifest.archives.find(
+            (candidate) => candidate.nodeId === bundleNodeId
+          );
+          const installOrderIndex = manifest.installOrder.indexOf(bundleNodeId);
+          if (!archive || installOrderIndex < 0) {
+            throw new NexusError(
+              "BUNDLE_INVALID",
+              "The selected Bundle node does not identify one verified archive."
+            );
+          }
+          resolvedArchivePath = archive.archivePath;
+          resolvedReceiptPath = archive.receiptPath;
+          bundle = {
+            bundleId: manifest.bundleId,
+            bundlePath: manifest.bundlePath,
+            bundleHash: manifest.bundleHash,
+            nodeId: archive.nodeId,
+            installOrderIndex
+          };
+          const satisfied = new Set([
+            ...manifest.satisfiedNodeIds,
+            ...(await agentic.getSatisfiedBundleNodeIds(manifest.bundleId))
+          ]);
+          dependencies = manifest.installOrder
+            .slice(0, installOrderIndex)
+            .map((nodeId) => {
+              const dependencyArchive = manifest.archives.find(
+                (candidate) => candidate.nodeId === nodeId
+              );
+              return {
+                nodeId,
+                kind:
+                  dependencyArchive?.kind === "loader_runtime"
+                    ? ("loader_runtime" as const)
+                    : ("nexus_mod" as const),
+                required: true,
+                satisfied: satisfied.has(nodeId),
+                evidence: [
+                  `Bundle ${manifest.bundleId} installOrder requires this node before ${bundleNodeId}.`
+                ]
+              };
+            });
+        } else {
+          if (archivePath === undefined || receiptPath === undefined) {
+            throw new NexusError(
+              "INVALID_INPUT",
+              "archivePath and receiptPath are both required for a single-archive Evidence Pack."
+            );
+          }
+          resolvedArchivePath = archivePath;
+          resolvedReceiptPath = receiptPath;
+        }
+        const evidence = await agentic.prepareEvidence({
+          archivePath: resolvedArchivePath,
+          receiptPath: resolvedReceiptPath,
+          ...(gameContextId === undefined ? {} : { gameContextId }),
+          ...(bundle === undefined ? {} : { bundle }),
+          ...(dependencies === undefined ? {} : { dependencies })
         });
         return ok(
           `Created Evidence Pack ${evidence.evidencePackId} with ${evidence.packageUnits.length} package units.`,
@@ -1061,7 +1149,7 @@ export function createNexusMcpServer(
     {
       title: "Query reusable installation methods",
       description:
-        "Evaluate current Evidence and Dynamic Game Context against verified Method Store entries and legacy Adapter compatibility providers. Also returns M2 operation capabilities, package-unit Proposal readiness, and registered-profile advisories. Follow recommendedAction; never invent a package unit or submit an installer Proposal when it says stop_before_proposal.",
+        "Evaluate current Evidence and Dynamic Game Context against verified Method Store entries and legacy Adapter compatibility providers. Also returns M3 operation capabilities, package-unit Proposal readiness, and registered-profile advisories. Follow recommendedAction and never invent a package unit.",
       inputSchema: {
         evidencePackId: z.string().uuid(),
         gameContextId: z.string().uuid()
@@ -1079,7 +1167,10 @@ export function createNexusMcpServer(
             ? "A registered Game Profile matches this explicit Context; re-probe with the returned legacyProfileId before planning."
             : result.proposalReadiness.recommendedAction ===
                 "stop_before_proposal"
-              ? "Evidence has no selectable package unit. Stop before Proposal submission; bundled-installer execution is unavailable in M2."
+              ? "Evidence has no selectable package unit. Stop before Proposal submission."
+              : result.proposalReadiness.recommendedAction ===
+                  "construct_agent_installer_proposal"
+                ? "A verified bundled-installer entry is available; research its bounded arguments, declared write roots, and postconditions, then construct one high-risk controlled installer Proposal."
               : result.proposalReadiness.recommendedAction ===
                   "construct_agent_file_proposal"
                 ? "No verified reusable installation Method matched; construct an evidence-bounded file Proposal."
@@ -1108,7 +1199,7 @@ export function createNexusMcpServer(
     {
       title: "Submit a bounded Agent installation Proposal",
       description:
-        "Validate and persist an immutable Contract V2 Proposal bound to exact Evidence and Game Context hashes. In M2, file-only install_tree operations are executable; bundled installer execution is reserved for M3.",
+        "Validate and persist an immutable Contract V2 Proposal bound to exact Evidence and Game Context hashes. M3 supports bounded install_tree or one controlled run_bundled_installer operation.",
       inputSchema: {
         evidencePackId: z.string().uuid(),
         gameContextId: z.string().uuid(),
@@ -1241,12 +1332,32 @@ export function createNexusMcpServer(
     async ({ planId }) =>
       safe(async () => {
         const result = await (await agenticInstalls()).applyPlan(planId);
+        if (result.executionKind === "installer") {
+          const response = ok(
+            `Applied controlled-installer plan ${planId}; resulting state is ${result.record.state}.`,
+            {
+              ok: result.record.state === "installed",
+              planId,
+              executionKind: result.executionKind,
+              installation: result.record,
+              refreshedGameContext: result.refreshedGameContext,
+              meta: meta("local", null, [
+                result.record.verification.static === "passed"
+                  ? "Declared side effects and static postconditions passed; in-game runtime verification has not run."
+                  : "Do not claim success; inspect recovery state and unexpectedChanges."
+              ])
+            }
+          );
+          if (result.record.state !== "installed") response.isError = true;
+          return response;
+        }
         const applied = result.applied;
         return ok(
           `Applied Contract V2 plan ${planId}; static verification passed for installation ${applied.record.installationId}.`,
           {
             ok: true,
             planId,
+            executionKind: result.executionKind,
             executionBridgePlanId: result.bridgePlanId,
             installation: {
               installationId: applied.record.installationId,

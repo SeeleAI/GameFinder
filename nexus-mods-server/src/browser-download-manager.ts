@@ -17,11 +17,11 @@ import {
   removeConfirmedInvalidStaging,
   type DownloadReceipt
 } from "./download-verifier.js";
-import { NexusError, type NexusErrorCode } from "./errors.js";
+import { NexusError, type ServerErrorCode } from "./errors.js";
 import type { NexusModFile } from "./types.js";
 
 interface PublicDownloadError {
-  code: NexusErrorCode;
+  code: ServerErrorCode;
   message: string;
   retryable: boolean;
 }

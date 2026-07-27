@@ -37,14 +37,44 @@ export type NexusErrorCode =
   | "OUTPUT_FILE_EXISTS"
   | "OUTPUT_PATH_INVALID";
 
+export type InstallErrorCode =
+  | "INPUT_RECEIPT_MISMATCH"
+  | "ARCHIVE_UNSUPPORTED"
+  | "ARCHIVE_UNSAFE"
+  | "ARCHIVE_LIMIT_EXCEEDED"
+  | "GAME_PROFILE_NOT_FOUND"
+  | "GAME_INSTANCE_NOT_FOUND"
+  | "GAME_INSTANCE_AMBIGUOUS"
+  | "ADAPTER_NOT_FOUND"
+  | "ADAPTER_AMBIGUOUS"
+  | "DEPENDENCY_MISSING"
+  | "INSTALL_CONFLICT"
+  | "PROTECTED_PATH"
+  | "GAME_PROCESS_RUNNING"
+  | "PLAN_STALE"
+  | "LOCK_BUSY"
+  | "INSUFFICIENT_SPACE"
+  | "APPLY_FAILED"
+  | "VERIFY_FAILED"
+  | "ROLLBACK_FAILED"
+  | "RECOVERY_REQUIRED"
+  | "INSTALLATION_DIRTY"
+  | "DEPENDENTS_EXIST"
+  | "OWNERSHIP_CONFLICT"
+  | "BACKUP_MISSING"
+  | "UNINSTALL_BLOCKED"
+  | "INSTALL_CONTRACT_INVALID";
+
+export type ServerErrorCode = NexusErrorCode | InstallErrorCode;
+
 export class NexusError extends Error {
-  readonly code: NexusErrorCode;
+  readonly code: ServerErrorCode;
   readonly status?: number;
   readonly retryable: boolean;
   readonly details?: Record<string, unknown>;
 
   constructor(
-    code: NexusErrorCode,
+    code: ServerErrorCode,
     message: string,
     options: {
       status?: number;

@@ -12,3 +12,4 @@ export * from "./path-policy.js";
 export * from "./profiles/index.js";
 export * from "./reversibility.js";
 export * from "./storage/index.js";
+export * from "./v2/index.js";

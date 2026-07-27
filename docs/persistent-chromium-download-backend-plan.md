@@ -1,6 +1,6 @@
 # Nexus Mods 专用持久化 Chromium 下载后端开发计划
 
-> 状态：Phase 0–5 已完成；Phase 6A 已验收；Phase 6B-0～6B-4.1 已实现并通过本地自动化测试；依赖感知下载/Bundle 黑盒测试及 Phase 6B-5 真实安装验收待进行
+> 状态：Phase 0–5 已完成；Phase 6A 已验收；Phase 6B-0～6B-4.1 及依赖感知下载/Bundle 黑盒测试已通过；安装规划层改按 [`phase6b-agentic-installation-architecture-v2.md`](phase6b-agentic-installation-architecture-v2.md) 重构，V2 M1 已完成，M2–M4 待开发
 > 编写日期：2026-07-24
 > 目标项目：`nexus-mods-server`
 > 目标运行环境：Windows、本地单用户、STDIO MCP、Node.js 20+

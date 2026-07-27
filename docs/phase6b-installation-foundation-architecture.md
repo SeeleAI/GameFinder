@@ -1,6 +1,13 @@
-# Phase 6B：Mod 安装基础架构设计
+# Phase 6B：Mod 安装基础架构设计（V1）
 
-> 状态：Phase 6B-0～6B-4.1 已实现并通过本地自动化与 Dependency Resolver 真实 API 测试；依赖感知下载/Bundle 黑盒测试及 Phase 6B-5 真实安装验收待进行
+> **替代状态（2026-07-27）：底层保留，规划层已被 V2 替代。**
+>
+> 当前架构基线为 [`phase6b-agentic-installation-architecture-v2.md`](phase6b-agentic-installation-architecture-v2.md)。
+>
+> 本文的 Archive 校验、staging、路径策略、冻结计划、事务、备份、回滚、Installation Record 与卸载状态模型继续作为 V2 基础；Adapter 中心规划、注册 Game Profile 硬门槛、未知包直接阻塞、禁止本地经验学习，以及原 Phase 6B-5 验收路径不再作为后续实现目标。
+> 本文保留用于解释现有 V1 代码和迁移来源，不应继续据此增加单 Mod、单 Loader Adapter。
+>
+> 历史实现状态：Phase 6B-0～6B-4.1 已实现并通过本地自动化、Dependency Resolver 真实 API 测试及依赖感知下载/Bundle 黑盒测试；安装代码将按 V2 迁移。
 > 编写日期：2026-07-25  
 > 目标仓库：`GameFinder`  
 > 目标组件：`install-game-mods` Skill 与 `nexus-mods-server` 本地安装模块  

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Install Game Mods"
+  short_description: "Install a verified Mod Archive or Bundle"
+  default_prompt: "Use $install-game-mods to verify, plan, and install this downloaded Mod Archive or Bundle."
+
+policy:
+  allow_implicit_invocation: false

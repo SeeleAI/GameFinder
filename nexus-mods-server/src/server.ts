@@ -4,8 +4,13 @@ import { z } from "zod/v4";
 import type { NexusBrowserAutomation } from "./browser/browser-service.js";
 import { NexusBrowserService } from "./browser/browser-service.js";
 import { BrowserDownloadManager } from "./browser-download-manager.js";
+import { DownloadBundleService } from "./download-bundle-service.js";
 import { DownloadManager, selectDownloadFile } from "./download-manager.js";
 import { asNexusError, NexusError } from "./errors.js";
+import {
+  InstallService,
+  resolveDefaultManagerRoot
+} from "./install/install-service.js";
 import { NexusClient } from "./nexus-client.js";
 import type { QuotaSnapshot, ResponseMeta } from "./types.js";
 import { parseGameRef, parseModRef } from "./url.js";
@@ -41,6 +46,7 @@ async function safe(run: () => Promise<CallToolResult>): Promise<CallToolResult>
         code: nexusError.code,
         message: nexusError.message,
         retryable: nexusError.retryable,
+        nextAction: installErrorNextAction(nexusError.code),
         ...(nexusError.status === undefined ? {} : { status: nexusError.status }),
         ...(nexusError.details === undefined ? {} : { details: nexusError.details })
       }
@@ -53,11 +59,64 @@ async function safe(run: () => Promise<CallToolResult>): Promise<CallToolResult>
   }
 }
 
+function installErrorNextAction(code: string): string | null {
+  const actions: Record<string, string> = {
+    INPUT_RECEIPT_MISMATCH:
+      "Use the exact archive and .nexus-receipt.json produced by download-nexus-mods; do not edit either file.",
+    ARCHIVE_UNSUPPORTED:
+      "Use a supported ZIP archive or stop; Phase 6B does not convert archive formats.",
+    ARCHIVE_UNSAFE:
+      "Stop installation and inspect the archive source; do not bypass archive safety checks.",
+    ARCHIVE_LIMIT_EXCEEDED:
+      "Stop and review the archive size and entry count before changing configured limits.",
+    GAME_PROFILE_NOT_FOUND:
+      "Call list_game_profiles and choose a registered profile.",
+    GAME_INSTANCE_NOT_FOUND:
+      "Provide the exact game installation root, then call probe_game_install.",
+    ADAPTER_NOT_FOUND:
+      "No deterministic installer supports this package; do not copy files manually.",
+    ADAPTER_AMBIGUOUS:
+      "Inspect package units and obtain an explicit packageUnitId before planning again.",
+    DEPENDENCY_MISSING:
+      "Install or repair the reported game loader dependency, then probe and plan again.",
+    INSTALL_CONFLICT:
+      "Review the reported target conflicts; do not force or delete existing files manually.",
+    GAME_PROCESS_RUNNING:
+      "Close the game and loader processes, then generate or apply a fresh plan.",
+    PLAN_STALE:
+      "Call plan_mod_install again and review the new plan before applying.",
+    LOCK_BUSY:
+      "Wait for the active transaction on this game instance to finish.",
+    VERIFY_FAILED:
+      "Do not claim success; inspect the returned transaction and verification evidence.",
+    ROLLBACK_FAILED:
+      "Stop writes and use rollback_mod_install with the reported transactionId.",
+    RECOVERY_REQUIRED:
+      "Use rollback_mod_install with the reported transactionId before another install.",
+    DEPENDENCY_UNRESOLVED:
+      "Review the normalized dependency graph and resolve every required external, unavailable, cyclic, or depth-limited node.",
+    DOWNLOAD_PLAN_STALE:
+      "Generate and review a new dependency-aware Download Plan.",
+    BUNDLE_INCOMPLETE:
+      "Download every planned file and pass each verified receipt before creating the Bundle Manifest.",
+    BUNDLE_INVALID:
+      "Use the immutable Bundle Manifest and exact archives/receipts produced by the dependency-aware download workflow."
+  };
+  return actions[code] ?? null;
+}
+
 const readOnlyAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: true,
   openWorldHint: true
+};
+
+const localReadOnlyAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false
 };
 
 export interface NexusMcpService {
@@ -67,16 +126,33 @@ export interface NexusMcpService {
 
 export function createNexusMcpServer(
   client = new NexusClient(),
-  browser: NexusBrowserAutomation = new NexusBrowserService()
+  browser: NexusBrowserAutomation = new NexusBrowserService(),
+  options: { managerRoot?: string } = {}
 ): NexusMcpService {
   const downloads = new DownloadManager(client);
   const browserDownloads = new BrowserDownloadManager(browser);
   const sessionBackends = new Map<string, "native" | "persistent_chromium">();
+  const managerRoot = options.managerRoot ?? resolveDefaultManagerRoot();
+  let installServicePromise: Promise<InstallService> | undefined;
+  let downloadBundleServicePromise: Promise<DownloadBundleService> | undefined;
+  const installs = (): Promise<InstallService> => {
+    installServicePromise ??= InstallService.create(
+      { managerRoot }
+    );
+    return installServicePromise;
+  };
+  const downloadBundles = (): Promise<DownloadBundleService> => {
+    downloadBundleServicePromise ??= DownloadBundleService.create({
+      client,
+      managerRoot
+    });
+    return downloadBundleServicePromise;
+  };
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, mod discovery, rankings, metrics, files, changelogs, requirements, and authorized downloads. Require canonical Nexus URLs. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Use research tools as read-only evidence, and use browser or download tools only after explicit user intent. The dedicated Chromium login tool opens a local persistent profile but never accepts account credentials. Native remains the default download backend; persistent_chromium downloads use prepare_download, start_download, get_download_status, and cancel_download."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and deterministic local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. Installation accepts an exact archive/receipt or a verified Bundle handoff and requires an exact game root: inspect and probe, show each frozen Install Plan, then call apply_mod_install with only planId after explicit approval. Never replace MCP installation tools with shell copy, extraction, or deletion. rollback_mod_install recovers incomplete transactions; it is not uninstall."
     }
   );
 
@@ -390,6 +466,169 @@ export function createNexusMcpServer(
   );
 
   server.registerTool(
+    "resolve_mod_dependencies",
+    {
+      title: "Resolve a normalized Mod dependency graph",
+      description:
+        "Recursively normalize one canonical Nexus Mod's required Nexus Mods, known loader runtimes, external requirements, and DLC into canonical nodes and edges. Does not select files or download anything.",
+      inputSchema: {
+        modUrl: z.string().url(),
+        maxDepth: z.number().int().min(0).max(10).default(5)
+      },
+      annotations: readOnlyAnnotations
+    },
+    async ({ modUrl, maxDepth }) =>
+      safe(async () => {
+        const service = await downloadBundles();
+        const resolution = await service.resolve({ modUrl, maxDepth });
+        const downloadable = resolution.nodes.filter((node) =>
+          ["nexus_mod", "loader_runtime"].includes(node.kind)
+        ).length;
+        const manual = resolution.nodes.length - downloadable;
+        return ok(
+          `Resolved ${resolution.nodes.length} dependency nodes: ${downloadable} Nexus-downloadable and ${manual} manual or external.`,
+          {
+            ok: true,
+            dependencyResolution: resolution,
+            meta: meta("nexus-graphql-v2", resolution.quota, resolution.warnings)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "plan_mod_download",
+    {
+      title: "Plan a dependency-aware Mod download",
+      description:
+        "Resolve required dependencies, freeze exact active Nexus file selections for the root Mod and downloadable dependencies, preserve manual requirements, and return a reviewable Download Plan. Writes only manager plan state and does not start downloads.",
+      inputSchema: {
+        modUrl: z.string().url(),
+        rootFileId: z.number().int().positive().optional(),
+        dependencyFileOverrides: z
+          .array(
+            z.object({
+              modUrl: z.string().url(),
+              fileId: z.number().int().positive()
+            })
+          )
+          .max(100)
+          .optional(),
+        satisfiedNodeIds: z
+          .array(z.string().trim().min(1))
+          .max(100)
+          .optional()
+          .describe("Dependencies independently proven present; never use this to guess satisfaction."),
+        maxDepth: z.number().int().min(0).max(10).default(5)
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true
+      }
+    },
+    async ({
+      modUrl,
+      rootFileId,
+      dependencyFileOverrides,
+      satisfiedNodeIds,
+      maxDepth
+    }) =>
+      safe(async () => {
+        const service = await downloadBundles();
+        const plan = await service.plan({
+          modUrl,
+          ...(rootFileId === undefined ? {} : { rootFileId }),
+          ...(dependencyFileOverrides === undefined
+            ? {}
+            : { dependencyFileOverrides }),
+          ...(satisfiedNodeIds === undefined ? {} : { satisfiedNodeIds }),
+          maxDepth
+        });
+        return ok(
+          `Created ${plan.status} Download Plan ${plan.planId} with ${plan.items.filter((item) => item.action === "download").length} file downloads, ${plan.items.filter((item) => item.action === "satisfied").length} satisfied dependencies, and ${plan.manualRequirements.length} manual requirements.`,
+          {
+            ok: true,
+            downloadPlan: plan,
+            meta: meta("local", client.lastQuota, [
+              "Review every dependency and selected file before starting any download.",
+              "Requirement notes are preserved as evidence and are not silently treated as machine-verified semantic version constraints."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "create_mod_bundle",
+    {
+      title: "Create a verified Mod Bundle Manifest",
+      description:
+        "After every file in one reviewed Download Plan is complete, verify all supplied receipts and archives, reject missing or extra files, and write one immutable Bundle Manifest with dependency-first install order. Does not install or extract anything.",
+      inputSchema: {
+        downloadPlanId: z.string().uuid(),
+        receiptPaths: z.array(z.string().min(3)).min(1).max(200),
+        outputDirectory: z.string().min(3)
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ downloadPlanId, receiptPaths, outputDirectory }) =>
+      safe(async () => {
+        const service = await downloadBundles();
+        const bundle = await service.createBundle({
+          planId: downloadPlanId,
+          receiptPaths,
+          outputDirectory
+        });
+        return ok(
+          `Created verified Mod Bundle ${bundle.bundleId} with ${bundle.archives.length} archives; state is ${bundle.state}.`,
+          {
+            ok: true,
+            bundle,
+            meta: meta("local", null, [
+              "The Bundle records downloaded material only; it does not prove that loader runtimes or Mods are installed.",
+              ...(bundle.manualRequirements.length > 0
+                ? ["Manual or external requirements remain pending."]
+                : [])
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "inspect_mod_bundle",
+    {
+      title: "Inspect and verify a Mod Bundle Manifest",
+      description:
+        "Verify one absolute Bundle Manifest path, its content hash, every bundled receipt, and every archive hash, then return dependency-first install order. Read-only.",
+      inputSchema: {
+        bundlePath: z.string().min(3)
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ bundlePath }) =>
+      safe(async () => {
+        const service = await downloadBundles();
+        const bundle = await service.inspectBundle(bundlePath);
+        return ok(
+          `Verified Mod Bundle ${bundle.bundleId}: ${bundle.archives.length} archives in dependency-first order.`,
+          {
+            ok: true,
+            bundle,
+            meta: meta("local", null)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
     "prepare_download",
     {
       title: "Prepare one Nexus mod download",
@@ -586,6 +825,401 @@ export function createNexusMcpServer(
           receipt,
           meta: meta("local", client.lastQuota, ["Archive was not extracted, executed, or installed."])
         });
+      })
+  );
+
+  server.registerTool(
+    "list_game_profiles",
+    {
+      title: "List supported game installation profiles",
+      description:
+        "List the built-in, versioned Game Profiles supported by the deterministic local installation engine. Does not scan disks or modify game files.",
+      inputSchema: {},
+      annotations: localReadOnlyAnnotations
+    },
+    async () =>
+      safe(async () => {
+        const service = await installs();
+        const profiles = service.listProfiles().map((profile) => ({
+          profileId: profile.profileId,
+          profileVersion: profile.profileVersion,
+          gameName: profile.gameName,
+          nexusDomainName: profile.nexusDomainName,
+          supportedOperatingSystems: profile.supportedOperatingSystems,
+          loaders: profile.loaders.map((loader) => ({
+            loaderId: loader.loaderId,
+            modRoots: loader.modRoots
+          })),
+          writableRoots: profile.filesystem.writableRoots
+        }));
+        return ok(`Listed ${profiles.length} supported game installation profiles.`, {
+          ok: true,
+          profiles,
+          meta: meta("local", null)
+        });
+      })
+  );
+
+  server.registerTool(
+    "detect_game_installs",
+    {
+      title: "Detect supported game installations",
+      description:
+        "Probe conventional locations and optional explicit candidate roots for one registered Game Profile. Detection is bounded and read-only; an empty result means the exact root must be supplied to probe_game_install.",
+      inputSchema: {
+        profileId: z.string().trim().min(1).default("stardew-valley"),
+        candidateRoots: z
+          .array(z.string().min(3))
+          .max(20)
+          .optional()
+          .describe("Optional absolute game-root candidates to probe.")
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ profileId, candidateRoots }) =>
+      safe(async () => {
+        const service = await installs();
+        const instances = await service.detectGameInstalls({
+          profileId,
+          ...(candidateRoots === undefined ? {} : { candidateRoots })
+        });
+        return ok(`Detected ${instances.length} verified game installations for ${profileId}.`, {
+          ok: true,
+          profileId,
+          instances,
+          meta: meta("local", null, [
+            ...(instances.length === 0
+              ? ["No conventional installation was verified; ask for the exact game root."]
+              : [])
+          ])
+        });
+      })
+  );
+
+  server.registerTool(
+    "probe_game_install",
+    {
+      title: "Probe one exact game installation",
+      description:
+        "Verify an exact absolute game root against a registered Game Profile and report anchors and loader state. Read-only and bounded to the supplied root.",
+      inputSchema: {
+        profileId: z.string().trim().min(1).default("stardew-valley"),
+        gameRoot: z.string().min(3).describe("Exact absolute game installation root.")
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ profileId, gameRoot }) =>
+      safe(async () => {
+        const service = await installs();
+        const instance = await service.probeGameInstall({ profileId, gameRoot });
+        return ok(
+          `Verified ${profileId} instance at ${instance.gameRoot}; loader states: ${instance.detectedLoaders
+            .map((loader) => `${loader.loaderId}=${loader.state}`)
+            .join(", ")}.`,
+          {
+            ok: true,
+            instance,
+            meta: meta("local", null)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "inspect_mod_archive",
+    {
+      title: "Inspect one verified Mod archive",
+      description:
+        "Verify an exact archive against its .nexus-receipt.json, safely inventory the ZIP, and identify package units without extracting into a game or manager staging directory.",
+      inputSchema: {
+        archivePath: z.string().min(3).describe("Absolute path to the downloaded ZIP."),
+        receiptPath: z.string().min(3).describe("Absolute path to the matching .nexus-receipt.json.")
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ archivePath, receiptPath }) =>
+      safe(async () => {
+        const service = await installs();
+        const inspected = await service.inspect({ archivePath, receiptPath });
+        return ok(
+          `Verified and inspected ${inspected.verifiedInput.archive.fileName}: ${inspected.analysis.packages.length} supported package units and ${inspected.analysis.ambiguities.length} ambiguities.`,
+          {
+            ok: true,
+            source: inspected.verifiedInput.source,
+            archive: inspected.verifiedInput.archive,
+            inventory: {
+              format: inspected.inventory.format,
+              entries: inspected.inventory.entries.length,
+              totalUncompressedBytes: inspected.inventory.totalUncompressedBytes,
+              commonTopLevelDirectory: inspected.inventory.commonTopLevelDirectory,
+              warnings: inspected.inventory.warnings
+            },
+            analysis: inspected.analysis,
+            meta: meta("local", null)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "match_install_adapters",
+    {
+      title: "Match installation adapters",
+      description:
+        "Read-only analysis that verifies the archive and exact game instance, then reports Adapter matches and loader compatibility. Does not stage or plan writes.",
+      inputSchema: {
+        archivePath: z.string().min(3),
+        receiptPath: z.string().min(3),
+        profileId: z.string().trim().min(1).default("stardew-valley"),
+        gameRoot: z.string().min(3)
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ archivePath, receiptPath, profileId, gameRoot }) =>
+      safe(async () => {
+        const service = await installs();
+        const matched = await service.matchAdapters({
+          archivePath,
+          receiptPath,
+          profileId,
+          gameRoot
+        });
+        return ok(
+          `Evaluated ${matched.matches.length} installation adapters; ${matched.matches.filter((item) => item.state === "matched").length} matched.`,
+          {
+            ok: true,
+            analysisId: matched.analysis.analysisId,
+            analysisHash: matched.analysis.analysisHash,
+            packages: matched.analysis.packages,
+            ambiguities: matched.analysis.ambiguities,
+            instance: matched.instance,
+            adapters: matched.matches,
+            meta: meta("local", null)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "plan_mod_install",
+    {
+      title: "Plan one deterministic Mod installation",
+      description:
+        "Verify the archive and receipt, probe the exact game root, stage only the selected package under manager state, and freeze a dry-run Install Plan. Does not modify the game. Review the returned operations and conflicts before apply_mod_install.",
+      inputSchema: {
+        archivePath: z.string().min(3),
+        receiptPath: z.string().min(3),
+        profileId: z.string().trim().min(1).default("stardew-valley"),
+        gameRoot: z.string().min(3),
+        packageUnitId: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Required only when inspection reports multiple package units.")
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ archivePath, receiptPath, profileId, gameRoot, packageUnitId }) =>
+      safe(async () => {
+        const service = await installs();
+        const planned = await service.plan({
+          archivePath,
+          receiptPath,
+          profileId,
+          gameRoot,
+          ...(packageUnitId === undefined ? {} : { packageUnitId })
+        });
+        const { plan } = planned.result;
+        return ok(
+          `Created Install Plan ${plan.planId} for ${planned.result.packageUnit.identity.name ?? planned.result.packageUnit.identity.uniqueId ?? "the selected package"} with ${plan.operations.length} game-directory operations. Review it before apply.`,
+          {
+            ok: true,
+            plan: {
+              planId: plan.planId,
+              planHash: plan.planHash,
+              status: plan.status,
+              createdAt: plan.createdAt,
+              expiresAt: plan.expiresAt,
+              game: {
+                profileId: plan.gameProfileId,
+                profileVersion: plan.gameProfileVersion,
+                instanceId: plan.gameInstanceId,
+                gameRoot: planned.instance.gameRoot
+              },
+              source: planned.verifiedInput.source,
+              archive: plan.archive,
+              package: planned.result.packageUnit,
+              adapter: planned.result.adapter,
+              operations: plan.operations.map((operation) => ({
+                operationId: operation.operationId,
+                kind: operation.kind,
+                targetRelativePath: operation.targetRelativePath,
+                expectedPreState: operation.expectedPreState,
+                expectedPostState: operation.expectedPostState
+              })),
+              conflicts: plan.conflicts,
+              warnings: planned.result.warnings,
+              verificationRequirements: planned.result.verificationRequirements,
+              requiresExplicitApplyConfirmation: true
+            },
+            meta: meta("local", null, [
+              "Planning writes only manager-owned staging and plan state; the game directory is unchanged.",
+              "apply_mod_install accepts only this planId and revalidates all frozen inputs."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "apply_mod_install",
+    {
+      title: "Apply one frozen Mod Install Plan",
+      description:
+        "Apply a previously reviewed Install Plan. Accepts only planId, revalidates receipt, archive, staging, target pre-state, game-process locks, writes, and static verification, and automatically rolls back a failed transaction.",
+      inputSchema: {
+        planId: z.string().uuid().describe("The exact immutable planId returned by plan_mod_install.")
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ planId }) =>
+      safe(async () => {
+        const service = await installs();
+        const applied = await service.apply(planId);
+        return ok(
+          `Installed ${applied.record.packageSummary.identity.name ?? applied.record.packageSummary.identity.uniqueId ?? "the selected Mod"} with static verification passed. Runtime verification has not run.`,
+          {
+            ok: true,
+            installation: {
+              installationId: applied.record.installationId,
+              transactionId: applied.transactionId,
+              state: applied.record.state,
+              adapterId: applied.record.adapterId,
+              sourcePlanId: applied.record.sourcePlanId,
+              package: applied.record.packageSummary,
+              operationOutcomes: applied.record.operationOutcomes,
+              staticVerification: applied.staticVerification,
+              runtimeVerification: applied.record.runtimeVerification
+            },
+            meta: meta("local", null, [
+              "Static installation verification passed; this does not prove that the Mod loaded successfully in game."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "get_install_status",
+    {
+      title: "Get installation plan, transaction, or record status",
+      description:
+        "Read one local installation object by exact kind and UUID. Use plan for a dry-run object, transaction for journal state, or installation for the durable Installation Record.",
+      inputSchema: {
+        kind: z.enum(["plan", "transaction", "installation"]),
+        id: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ kind, id }) =>
+      safe(async () => {
+        const service = await installs();
+        const status =
+          kind === "plan"
+            ? await service.getPlan(id)
+            : kind === "transaction"
+              ? await service.getTransaction(id)
+              : await service.getInstallation(id);
+        return ok(`Retrieved ${kind} status for ${id}.`, {
+          ok: true,
+          kind,
+          status,
+          meta: meta("local", null)
+        });
+      })
+  );
+
+  server.registerTool(
+    "verify_mod_install",
+    {
+      title: "Verify one installed Mod",
+      description:
+        "Read the durable Installation Record, compare current game paths with committed post-state, run Adapter static verification, and report runtime-verification availability. Does not launch the game or modify files.",
+      inputSchema: {
+        installationId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ installationId }) =>
+      safe(async () => {
+        const service = await installs();
+        const verified = await service.verifyInstallation(installationId);
+        const passed =
+          verified.staticVerification.state === "passed" &&
+          !verified.inspection.blocking;
+        return ok(
+          passed
+            ? `Installation ${installationId} passes current static verification; runtime verification is ${verified.runtimeVerification.state}.`
+            : `Installation ${installationId} does not pass current static verification.`,
+          {
+            ok: true,
+            installationId,
+            passed,
+            recordState: verified.record.state,
+            inspection: verified.inspection,
+            staticVerification: verified.staticVerification,
+            runtimeVerification: verified.runtimeVerification,
+            meta: meta("local", null, [
+              ...(verified.runtimeVerification.state === "not-run"
+                ? ["Runtime verification has not run; do not claim the Mod loaded successfully in game."]
+                : [])
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "rollback_mod_install",
+    {
+      title: "Recover one incomplete install transaction",
+      description:
+        "Recover or roll back one incomplete install transaction by transactionId using its journal and backups. This is crash/failure recovery only; it does not uninstall a committed Mod.",
+      inputSchema: {
+        transactionId: z.string().uuid()
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async ({ transactionId }) =>
+      safe(async () => {
+        const service = await installs();
+        const recovery = await service.recoverInstallTransaction(transactionId);
+        return ok(
+          `Install transaction ${transactionId} recovery result: ${recovery.action}.`,
+          {
+            ok: true,
+            recovery,
+            meta: meta("local", null, [
+              "A terminal committed installation is left installed; use a future uninstall workflow to remove it."
+            ])
+          }
+        );
       })
   );
 

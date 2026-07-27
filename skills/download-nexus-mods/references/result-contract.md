@@ -47,10 +47,26 @@ Downloaded and verified:
 - Backend: value
 - Compatibility/dependency warnings: values or none
 
-The archive was not extracted, executed, installed, enabled, or imported into a Mod manager.
+The archives were not extracted, executed, installed, enabled, or imported into a Mod manager.
 ```
 
 Do not report browser Profile paths, staging paths, temporary URLs, authorization values, or credentials.
+
+## Dependency-complete Bundle
+
+For a dependency-aware run, also require:
+
+```text
+bundleId: UUID
+bundlePath: absolute JSON path
+bundleHash: SHA-256
+state: download_complete | download_complete_requirements_pending
+archives: one entry per planned download
+installOrder: dependency-first node IDs
+manualRequirements: explicit list
+```
+
+Return every Archive and receipt pair, the Bundle path/hash, satisfied dependency nodes, manual requirements, and warnings. `download_complete_requirements_pending` is not installation-ready until the listed requirements are resolved.
 
 ## Installation handoff boundary
 
@@ -62,4 +78,4 @@ The only future installation inputs produced by this Skill are:
 - File name, bytes, SHA-256, and archive-check result.
 - Preserved dependencies and compatibility warnings.
 
-A future installation Skill must independently inspect the archive, identify the game and deployment method, plan mutations, and obtain any required confirmation. Download completion is not installation approval.
+`install-game-mods` may consume one Archive/receipt pair or a verified Bundle Manifest. It must independently inspect every selected Archive, verify dependency satisfaction and install order, identify the exact game instance and Adapter, display each frozen Install Plan, and obtain approval. Download completion is not installation approval.

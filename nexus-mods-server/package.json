@@ -2,7 +2,7 @@
   "name": "nexus-mods-server",
   "version": "0.1.0",
   "private": true,
-  "description": "A local MCP server for Nexus Mods research and authorized downloads.",
+  "description": "A local MCP server for Nexus Mods research, authorized downloads, and deterministic Mod installation.",
   "type": "module",
   "bin": {
     "nexus-mods-server": "dist/index.js"

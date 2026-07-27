@@ -1,6 +1,6 @@
 # Phase 6B：Mod 安装基础架构设计
 
-> 状态：设计草案，等待评审  
+> 状态：Phase 6B-0～6B-4.1 已实现并通过本地自动化与 Dependency Resolver 真实 API 测试；依赖感知下载/Bundle 黑盒测试及 Phase 6B-5 真实安装验收待进行
 > 编写日期：2026-07-25  
 > 目标仓库：`GameFinder`  
 > 目标组件：`install-game-mods` Skill 与 `nexus-mods-server` 本地安装模块  
@@ -1466,6 +1466,41 @@ Mod 更新是一个特殊的替换 transaction，不应建模成“先无记录�
 - 确认 Research、Download、Install 路由互不越界。
 
 通过标准：全新 Codex 任务正确触发安装 Skill，只使用 planId 执行。
+
+实施记录（2026-07-27）：
+
+- 已在现有 `nexus-mods-server` 中注册 Profile、Instance probe、Archive inspection、Adapter matching、plan、apply、status、verify 和 transaction recovery 工具。
+- `plan_mod_install` 将 Archive、receipt、Package Analysis、Game Profile、Game Instance、Adapter、staging 和 target pre-state 固化到不可变 Plan 与服务器内部 Plan Execution Context。
+- `apply_mod_install` 的 MCP input schema 只有 `planId`；执行前重新验证 Plan hash、Context hash、receipt、Archive SHA-256、staging tree、进程锁和目标前置状态。
+- 已创建 `install-game-mods` Skill，并将 `research-nexus-mods`、`download-nexus-mods`、`install-game-mods` 的触发边界固定为“选择 / 下载 / 安装”。
+- 自动化 MCP 测试已证明 planning 不修改游戏目录、apply 只通过 `planId`、静态验证成功，以及缺少 SMAPI 时安全阻塞。
+- `rollback_mod_install` 第一版只恢复未完成安装事务，不卸载已提交 Mod；公开 Uninstall MCP/Skill 仍属于后续阶段。
+- `cancel_mod_install` 暂不公开：当前不可变计划不修改游戏目录，过期计划会自然失效；若后续需要主动释放 staging，再引入带审计状态的取消操作。
+
+### Phase 6B-4.1：依赖感知下载与 Bundle 交接
+
+职责修订：
+
+- 生产工作流使用显式 `$download-nexus-mods` 与 `$install-game-mods` 调用；隐式自动触发仅作为描述质量覆盖，不再作为硬验收条件。
+- Download 阶段负责解析硬依赖图、标准化 Nexus 身份、冻结每个具体文件、逐个下载并生成 Bundle Manifest。
+- Install 阶段负责检测依赖满足状态、按 Bundle 的 dependency-first 顺序逐项规划和安装；下载完成不表示依赖已安装。
+- Loader/runtime 不交给普通 Mod-folder Adapter。SMAPI 使用独立 `smapi-loader-installer` Adapter 设计；该 Adapter 完成前只能下载并报告阻塞，不能声称自动安装。
+
+新增 MCP 对象与工具：
+
+- `resolve_mod_dependencies`：把 Nexus `gameId + modId`、DLC 与外部 requirement 标准化为有界 DAG。
+- `plan_mod_download`：冻结 root 和所有可下载硬依赖的 file ID；保留版本 notes、manual requirements、blockers、Plan hash 与 expiry。
+- `create_mod_bundle`：只接受已审查 Download Plan 和完整 receipt 集，重新验证每个 Archive/receipt 后写出不可变 Bundle Manifest。
+- `inspect_mod_bundle`：验证 Bundle hash、Archive hash、receipt 和 dependency-first install order。
+
+Bundle Manifest 不替代 Installation Record：
+
+- Bundle 证明“下载物料完整且未变化”。
+- Game Profile 与 Installation Record 证明“本机依赖已经满足”。
+- Install Plan 控制“一次具体安装写入”。
+- Bundle 内每个尚未满足的条目仍需要独立 Install Plan、审批、事务和验证。
+
+第一版 SMAPI Loader Adapter 只固定安全设计，不执行安装器。未来实现必须使用受约束的 Adapter operation、冻结的官方 Archive、固定参数、进程锁、超时、journal、post-state 验证和可证明恢复；禁止 Agent 提供任意命令。
 
 ### Phase 6B-5：Stardew Valley 真实验收
 

@@ -26,11 +26,25 @@ try {
     "get_mod",
     "get_mod_files",
     "get_mod_requirements",
+    "resolve_mod_dependencies",
+    "plan_mod_download",
+    "create_mod_bundle",
+    "inspect_mod_bundle",
     "prepare_download",
     "get_download_status",
     "start_download",
     "cancel_download",
-    "download_mod_file"
+    "download_mod_file",
+    "list_game_profiles",
+    "detect_game_installs",
+    "probe_game_install",
+    "inspect_mod_archive",
+    "match_install_adapters",
+    "plan_mod_install",
+    "apply_mod_install",
+    "get_install_status",
+    "verify_mod_install",
+    "rollback_mod_install"
   ];
   const available = new Set(tools.tools.map((tool) => tool.name));
   const missing = required.filter((name) => !available.has(name));

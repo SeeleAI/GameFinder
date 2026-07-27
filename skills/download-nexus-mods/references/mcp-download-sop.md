@@ -3,6 +3,7 @@
 ## Contents
 
 - Preconditions
+- Dependency plan
 - File selection
 - Backend policy
 - Persistent Chromium sequence
@@ -22,6 +23,19 @@ Require:
 - Healthy `nexus-mods-server` MCP availability.
 
 Call `health_check` only when MCP or credential availability is uncertain. Use `get_mod` or `get_mod_files` when identity, availability, variants, or file state needs confirmation.
+
+## Dependency plan
+
+Before `prepare_download`:
+
+1. Call `plan_mod_download(modUrl, rootFileId?, dependencyFileOverrides?, satisfiedNodeIds?)`.
+2. Stop on a blocked Plan, dependency cycle, depth limit, unavailable required node, or uncanonicalized dependency.
+3. Display the root and every dependency file selection, plus manual requirements.
+4. Obtain explicit approval of the returned `downloadPlanId`.
+5. Download each item whose action is `download`, in the Plan order.
+6. After all receipts exist, call `create_mod_bundle`.
+
+Use `resolve_mod_dependencies` separately only when the graph needs explanation before file selection. Do not treat raw `get_mod_requirements` output as a complete download plan.
 
 ## File selection
 
@@ -51,7 +65,7 @@ The MCP server keeps `native` as its compatibility default. Use `native` only wh
 
 ## Persistent Chromium sequence
 
-1. Call:
+For each approved Download Plan item, call:
 
    ```text
    prepare_download(modUrl, fileId?, backend="persistent_chromium")
@@ -121,6 +135,7 @@ Retry one transient technical failure only when `retryable=true` and the retry d
 ## Completion checklist
 
 - Explicit download intent was present.
+- A dependency-aware Download Plan was reviewed.
 - Canonical Mod and file identity match.
 - Output directory is absolute and safe.
 - Terminal state is `completed`.
@@ -130,3 +145,4 @@ Retry one transient technical failure only when `retryable=true` and the retry d
 - Receipt path is absolute and readable.
 - No temporary authorization material was exposed.
 - Nothing was extracted, executed, installed, or imported.
+- Every planned receipt was added to a verified Bundle Manifest, or the user explicitly chose a non-installation-ready root-only result.

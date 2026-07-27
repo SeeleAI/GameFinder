@@ -6,6 +6,7 @@ export * from "./contracts.js";
 export * from "./core/index.js";
 export * from "./file-hash.js";
 export * from "./input-verifier.js";
+export * from "./install-service.js";
 export * from "./package-analyzer.js";
 export * from "./path-policy.js";
 export * from "./profiles/index.js";

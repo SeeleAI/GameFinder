@@ -1,80 +1,87 @@
 ---
 name: download-nexus-mods
-description: Download and verify one explicitly selected Nexus Mod archive from a canonical Nexus mod-page URL or a confirmed research handoff, using nexus-mods-server MCP. Use when the user explicitly asks to download or save an exact Mod or file, or continues from a chosen research-nexus-mods result. Prefer the persistent Chromium workflow for normal Nexus downloads. Do not use for Mod discovery or comparison, archive extraction, installation, Vortex import, or Mod development.
+description: Resolve required dependencies, plan exact Nexus file selections, download and verify one explicitly selected Mod plus its required downloadable dependencies, and produce Archive receipts and a Mod Bundle Manifest through nexus-mods-server MCP. Use when the user explicitly asks to download or save an exact Nexus Mod/file, including dependency-complete preparation for install-game-mods. Prefer persistent Chromium. Do not use for Mod discovery/comparison, installation, extraction, Vortex import, optional companion Mods, or Mod development.
 ---
 
 # Download Nexus Mods
 
-Download exactly one user-selected Nexus file through the normal Nexus workflow, verify it, and return its archive and receipt. Treat this Skill as a stateful MCP orchestration procedure; do not reimplement downloading in shell scripts or browser automation.
+Prepare one selected Mod and its required downloadable dependency set. Use MCP for dependency resolution, planning, each single-file download, receipt verification, and Bundle creation; never reimplement these operations with shell or browser scripts.
 
 ## Route the request
 
-Require explicit download intent and one canonical Mod URL shaped like:
+Require explicit download intent and one canonical Mod URL:
 
 ```text
 https://www.nexusmods.com/<game-domain>/mods/<mod-id>
 ```
 
-Accept the URL directly or from a confirmed `research-nexus-mods` handoff. Normalize harmless query parameters and fragments through MCP. Do not accept a game page, collection, search result, arbitrary Nexus URL, or game name as the download identity.
+Use `research-nexus-mods` while the unresolved question is which Mod to choose. Stop after verified downloads and Bundle creation; installation belongs to `install-game-mods`.
 
-Use `research-nexus-mods` instead when the user is still asking which Mod is best, popular, versatile, compatible, or suitable as a development reference. If a combined request asks to find and download a Mod, finish research first and obtain an unambiguous selection before preparing a download. Do not silently choose among multiple finalists.
+Read:
 
-If the user asks to install, extract, enable, deploy, or import a Mod, limit this workflow to downloading and verification. State that installation belongs to a separate workflow that is not implemented by this Skill.
+- [references/dependency-planning.md](references/dependency-planning.md) before resolving or selecting dependencies.
+- [references/mcp-download-sop.md](references/mcp-download-sop.md) for the exact plan, download, polling, and Bundle sequence.
+- [references/result-contract.md](references/result-contract.md) before reporting completion.
+- [references/research-handoff.md](references/research-handoff.md) when consuming a Research handoff.
 
-## Read the download contracts
-
-Before calling download tools, read:
-
-- [references/mcp-download-sop.md](references/mcp-download-sop.md) for file selection, backend choice, the exact MCP sequence, polling, interaction recovery, cancellation, and errors.
-- [references/research-handoff.md](references/research-handoff.md) when consuming a Research→Download handoff.
-- [references/result-contract.md](references/result-contract.md) for receipt validation and the final response.
-
-## Confirm the target
+## Plan the complete required set
 
 Establish:
 
 ```yaml
-mod_url: https://www.nexusmods.com/eldenring/mods/9531
-file_id: 47215 # optional
-output_directory: C:\absolute\path # optional
+mod_url: https://www.nexusmods.com/stardewvalley/mods/2697
+root_file_id: 115145 # optional when latest active MAIN is acceptable
+dependency_file_overrides: [] # optional exact choices
+satisfied_node_ids: [] # only independently proven local dependencies
+output_directory: C:\absolute\path
 backend: persistent_chromium
 ```
 
-- Treat `mod_url` as mandatory.
-- Treat `file_id` as optional only when selecting the latest active MAIN file is acceptable.
-- Call `get_mod_files` before preparing when variants, optional files, compatibility branches, old versions, language packs, or explicit user constraints could materially change the choice.
-- Never silently select an archived, removed, OLD, OPTIONAL, or MISCELLANEOUS file.
-- If the output directory is omitted, create a run-specific directory under the current workspace at `outputs/mod-downloads/<game-domain>/mod-<mod-id>/`. Resolve it to an absolute path and report it.
-- Never use a game installation directory, home-directory root, drive root, or shared browser Profile directory as the download destination.
+Call `resolve_mod_dependencies` when the graph needs explanation, then call `plan_mod_download`. Treat the returned graph and file selections as authoritative.
 
-## Run one download
+Show:
 
-1. Confirm explicit user intent, canonical Mod identity, file selection policy, and absolute output directory.
-2. Call `prepare_download` with `backend="persistent_chromium"` unless the user explicitly requests the native/NXM path.
-3. Verify that the prepared response matches the requested canonical Mod and `fileId`, or the documented latest-active-MAIN policy. Preparation alone does not authorize a different file.
-4. Call `start_download(sessionId, outputDirectory)` once.
-5. Poll `get_download_status(sessionId)` until completion, a user-interaction state, a terminal failure, or cancellation.
-6. When interaction is required, keep the same session and follow `mcp-download-sop.md`. Never ask for credentials, 2FA codes, cookies, tokens, NXM keys, or CAPTCHA answers in chat.
-7. On `completed`, validate the receipt with `result-contract.md`.
-8. Return the verified archive path, receipt path, file identity, byte count, SHA-256, archive check, backend, and any warnings.
+- Root Mod/file.
+- Every required Nexus Mod and Loader Runtime.
+- Canonical Mod URLs, version notes, selected file IDs/versions, and selection reasons.
+- Dependencies independently proven satisfied.
+- DLC/external/manual requirements.
+- Cycles, depth limits, unavailable nodes, blockers, and evidence gaps.
+- `downloadPlanId` and expiry.
 
-Do not claim success from a browser click, a partial file, or a nonterminal status. Do not expose `.part`, `.crdownload`, temporary URLs, NXM authorization, Cookie values, or CDN query parameters.
+Stop for explicit approval before starting downloads. A request to download the root Mod does not silently authorize additional files whose identities were not yet shown. Never mark a dependency satisfied from its name alone; use Game Profile/installation evidence or explicit user confirmation backed by evidence.
+
+If the user explicitly insists on root-only download after seeing required dependencies, download only the root and report that the result is not an installation-ready Bundle.
+
+## Download the approved files
+
+For each approved Download Plan item whose action is `download`, in dependency-first order:
+
+1. Call `prepare_download` with its exact canonical `modUrl`, frozen `fileId`, and `backend="persistent_chromium"`.
+2. Verify the prepared Mod/file matches the Plan.
+3. Call `start_download` once.
+4. Poll `get_download_status` to a terminal state.
+5. Preserve the completed absolute Archive and receipt paths.
+
+Do not substitute another file, drop a required dependency, or add optional/recommended Mods. Follow [references/mcp-download-sop.md](references/mcp-download-sop.md) for browser interaction and errors.
+
+## Create the Bundle handoff
+
+After every planned file completes, call:
+
+```text
+create_mod_bundle(downloadPlanId, receiptPaths, outputDirectory)
+```
+
+Bundle creation must reject missing, duplicate, extra, modified, or mismatched receipts. Call `inspect_mod_bundle(bundlePath)` when revalidating an existing handoff.
+
+Return the Bundle path plus every Archive/receipt pair. Distinguish:
+
+- `download_complete`: all downloadable requirements are present and no manual requirement remains.
+- `download_complete_requirements_pending`: files are complete, but DLC/external/manual requirements still need resolution.
+
+Do not claim that a downloaded Loader Runtime such as SMAPI is installed. The Bundle records acquisition and dependency order only.
 
 ## Preserve the stopping boundary
 
-Stop after the verified archive and non-secret receipt exist. Do not:
-
-- Extract the archive.
-- Execute any included binary or script.
-- Copy files into a game directory.
-- Modify load order, configuration, saves, or registry state.
-- Import into Vortex or another manager.
-- Claim that the Mod is installed, enabled, compatible, or working in game.
-
-The verified receipt is the handoff artifact for a future installation Skill.
-
-## Handle cancellation and ambiguity
-
-Call `cancel_download` only when the user asks to cancel or the active workflow must be stopped to honor a replacement request. Do not cancel a completed download.
-
-Pause before preparation when the exact Mod is ambiguous. Pause before start when the prepared file differs from the user's explicit file selection. After preparation, do not broaden the operation to additional dependencies or complementary Mods without separate explicit download intent for each file.
+Do not extract, execute, install, enable, configure, import, or modify the game. Do not expose credentials, cookies, NXM authorization, temporary CDN URLs, `.part`, or `.crdownload` paths.

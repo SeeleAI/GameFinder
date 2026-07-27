@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, link, mkdir, open, rm, stat, unlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  link,
+  mkdir,
+  open,
+  readFile,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { NexusError } from "./errors.js";
 
@@ -137,6 +147,86 @@ async function hashFile(filePath: string): Promise<string> {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer);
   return hash.digest("hex");
+}
+
+export async function verifyExistingDownloadReceipt(
+  receiptPath: string,
+): Promise<DownloadReceipt> {
+  if (!path.isAbsolute(receiptPath)) {
+    throw new NexusError(
+      "BUNDLE_INVALID",
+      "Download receipt paths must be absolute.",
+    );
+  }
+  const resolvedReceiptPath = path.resolve(receiptPath);
+  let receipt: DownloadReceipt;
+  try {
+    receipt = JSON.parse(
+      await readFile(resolvedReceiptPath, "utf8"),
+    ) as DownloadReceipt;
+  } catch (error) {
+    throw new NexusError(
+      "BUNDLE_INVALID",
+      "A download receipt is missing, unreadable, or invalid JSON.",
+      { cause: error, details: { receiptPath: resolvedReceiptPath } },
+    );
+  }
+  if (
+    receipt.schemaVersion !== 1 ||
+    !path.isAbsolute(receipt.absolutePath) ||
+    !path.isAbsolute(receipt.receiptPath) ||
+    path.resolve(receipt.receiptPath) !== resolvedReceiptPath ||
+    path.resolve(receipt.absolutePath) !== path.resolve(receipt.targetPath) ||
+    !Number.isSafeInteger(receipt.modId) ||
+    receipt.modId <= 0 ||
+    !Number.isSafeInteger(receipt.fileId) ||
+    receipt.fileId <= 0 ||
+    !/^[a-f0-9]{64}$/.test(receipt.sha256) ||
+    receipt.archiveValid === false ||
+    receipt.archiveCheck?.valid === false
+  ) {
+    throw new NexusError(
+      "BUNDLE_INVALID",
+      "A download receipt failed structural validation.",
+      { details: { receiptPath: resolvedReceiptPath } },
+    );
+  }
+  const lowerArchivePath = receipt.absolutePath.toLowerCase();
+  if (
+    lowerArchivePath.endsWith(".part") ||
+    lowerArchivePath.endsWith(".crdownload")
+  ) {
+    throw new NexusError(
+      "BUNDLE_INVALID",
+      "Temporary download files cannot be added to a Mod Bundle.",
+      { details: { archivePath: receipt.absolutePath } },
+    );
+  }
+  const archiveInfo = await stat(receipt.absolutePath).catch(
+    (error: unknown) => {
+      throw new NexusError(
+        "BUNDLE_INVALID",
+        "An archive referenced by a download receipt is missing.",
+        {
+          cause: error,
+          details: { archivePath: receipt.absolutePath },
+        },
+      );
+    },
+  );
+  if (
+    !archiveInfo.isFile() ||
+    archiveInfo.size !== receipt.bytes ||
+    path.basename(receipt.absolutePath) !== receipt.fileName ||
+    (await hashFile(receipt.absolutePath)) !== receipt.sha256
+  ) {
+    throw new NexusError(
+      "BUNDLE_INVALID",
+      "An archive no longer matches its download receipt.",
+      { details: { receiptPath: resolvedReceiptPath } },
+    );
+  }
+  return receipt;
 }
 
 export async function finalizeDownloadedFile(input: FinalizeDownloadInput): Promise<DownloadReceipt> {

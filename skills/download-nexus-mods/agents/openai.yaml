@@ -1,4 +1,4 @@
 interface:
-  display_name: "Nexus Mod Download"
-  short_description: "Download one verified Nexus Mod through MCP"
-  default_prompt: "Use $download-nexus-mods to download this exact Nexus Mod file through the persistent Chromium MCP workflow."
+  display_name: "Nexus Mod Download Bundle"
+  short_description: "Download Mods with required dependencies"
+  default_prompt: "Use $download-nexus-mods to resolve dependencies and download this exact Nexus Mod as a verified Bundle."

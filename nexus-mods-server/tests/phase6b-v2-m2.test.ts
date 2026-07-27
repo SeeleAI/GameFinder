@@ -48,7 +48,9 @@ async function writeZip(
   });
 }
 
-async function createFixture(): Promise<{
+async function createFixture(
+  options: { installerOnly?: boolean } = {},
+): Promise<{
   archivePath: string;
   receiptPath: string;
   gameRoot: string;
@@ -57,25 +59,42 @@ async function createFixture(): Promise<{
   const downloadsRoot = await temporaryDirectory("phase6b-v2-m2-download-");
   const gameRoot = await temporaryDirectory("phase6b-v2-m2-game-");
   const managerRoot = await temporaryDirectory("phase6b-v2-m2-manager-");
-  const archivePath = path.join(downloadsRoot, "ExampleUnknownMod.zip");
+  const archivePath = path.join(
+    downloadsRoot,
+    options.installerOnly ? "ExampleInstaller.zip" : "ExampleUnknownMod.zip",
+  );
   const receiptPath = `${archivePath}.nexus-receipt.json`;
 
-  await writeZip(archivePath, [
-    {
-      path: "ExampleUnknownMod/manifest.json",
-      content: JSON.stringify({
-        Name: "Example Unknown Mod",
-        Author: "Fixture",
-        Version: "1.0.0",
-        UniqueID: "Fixture.ExampleUnknownMod",
-        EntryDll: "ExampleUnknownMod.dll",
-      }),
-    },
-    {
-      path: "ExampleUnknownMod/ExampleUnknownMod.dll",
-      content: "fixture-payload",
-    },
-  ]);
+  await writeZip(
+    archivePath,
+    options.installerOnly
+      ? [
+          {
+            path: "Example Installer/internal/windows/Setup.exe",
+            content: "fixture-installer",
+          },
+          {
+            path: "Example Installer/README.txt",
+            content: "Run the bundled installer.",
+          },
+        ]
+      : [
+          {
+            path: "ExampleUnknownMod/manifest.json",
+            content: JSON.stringify({
+              Name: "Example Unknown Mod",
+              Author: "Fixture",
+              Version: "1.0.0",
+              UniqueID: "Fixture.ExampleUnknownMod",
+              EntryDll: "ExampleUnknownMod.dll",
+            }),
+          },
+          {
+            path: "ExampleUnknownMod/ExampleUnknownMod.dll",
+            content: "fixture-payload",
+          },
+        ],
+  );
   const archiveInfo = await stat(archivePath);
   const receipt: DownloadReceipt = {
     schemaVersion: 1,
@@ -152,6 +171,20 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
       gameContextId: context.gameContextId,
     });
     expect(queried.candidates).toEqual([]);
+    expect(queried.operationCapabilities).toMatchObject({
+      installTree: { state: "available", executableIn: "M2" },
+      runBundledInstaller: {
+        state: "unavailable",
+        errorCode: "OPERATION_CAPABILITY_MISSING",
+        plannedFor: "M3",
+      },
+    });
+    expect(queried.proposalReadiness).toMatchObject({
+      packageUnitCount: 1,
+      canSubmitFileProposal: true,
+      recommendedAction: "construct_agent_file_proposal",
+      blockers: [],
+    });
 
     const proposal = await service.submitProposal({
       evidencePackId: evidence.evidencePackId,
@@ -274,5 +307,161 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "PROTECTED_PATH" });
+  });
+
+  it("stops before Proposal when Evidence has no package unit and reports the M3 capability boundary", async () => {
+    const fixture = await createFixture({ installerOnly: true });
+    const legacy = await InstallService.create({
+      managerRoot: fixture.managerRoot,
+    });
+    const service = await AgenticInstallService.create({
+      managerRoot: fixture.managerRoot,
+      legacy,
+    });
+    const context = await service.probeGameContext({
+      gameRoot: fixture.gameRoot,
+      gameId: "example-game",
+      gameName: "Example Game",
+      nexusDomainName: "examplegame",
+      operatingSystem: "win32",
+      anchorPaths: ["ExampleGame.exe"],
+      writableRoots: ["Mods"],
+      liveModRoots: ["Mods"],
+    });
+    const evidence = await service.prepareEvidence({
+      archivePath: fixture.archivePath,
+      receiptPath: fixture.receiptPath,
+      gameContextId: context.gameContextId,
+    });
+    expect(evidence.packageUnits).toEqual([]);
+
+    const queried = await service.queryMethods({
+      evidencePackId: evidence.evidencePackId,
+      gameContextId: context.gameContextId,
+    });
+    expect(queried.proposalReadiness).toMatchObject({
+      packageUnitCount: 0,
+      canSubmitFileProposal: false,
+      recommendedAction: "stop_before_proposal",
+      blockers: expect.arrayContaining([
+        { code: "PACKAGE_UNIT_MISSING", message: expect.any(String) },
+        {
+          code: "OPERATION_CAPABILITY_MISSING",
+          message: expect.any(String),
+        },
+      ]),
+    });
+    expect(queried.operationCapabilities.runBundledInstaller).toMatchObject({
+      state: "unavailable",
+      errorCode: "OPERATION_CAPABILITY_MISSING",
+      plannedFor: "M3",
+    });
+
+    await expect(
+      service.submitProposal({
+        evidencePackId: evidence.evidencePackId,
+        gameContextId: context.gameContextId,
+        draft: {
+          strategyBinding: {
+            origin: "agent_proposal",
+            methodId: null,
+            methodRevision: null,
+            methodHash: null,
+            legacyAdapterBinding: null,
+          },
+          selection: {
+            packageUnitId: "installer-windows",
+            packageRoot: "Example Installer",
+            selectedComponents: ["windows"],
+          },
+          operations: [
+            {
+              operationId: randomUUID(),
+              kind: "run_bundled_installer",
+              entry: {
+                source: "verified_staging",
+                relativePath:
+                  "Example Installer/internal/windows/Setup.exe",
+                runtime: "native",
+                sha256: "a".repeat(64),
+              },
+              arguments: [],
+              workingDirectory: "Example Installer",
+              environmentPolicy: "minimal",
+              timeoutMs: 300_000,
+              allowedExitCodes: [0],
+              declaredWriteRoots: [
+                { scope: "game_root", path: "Mods", evidenceIds: [] },
+              ],
+              postConditions: [
+                {
+                  checkId: "mods-root-exists",
+                  kind: "path_exists",
+                  subject: "Mods",
+                  expected: "present",
+                  required: true,
+                  evidenceIds: [],
+                },
+              ],
+              reversibilityLevel: "manual_recovery",
+            },
+          ],
+          preconditions: [],
+          verificationRequirements: [],
+          unresolvedChoices: [],
+          risk: {
+            level: "high",
+            reasons: ["Bundled installer execution requires M3."],
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "OPERATION_CAPABILITY_MISSING" });
+  });
+
+  it("advises re-probing with a registered legacy profile instead of keeping invented identity", async () => {
+    const fixture = await createFixture();
+    const legacy = await InstallService.create({
+      managerRoot: fixture.managerRoot,
+    });
+    const service = await AgenticInstallService.create({
+      managerRoot: fixture.managerRoot,
+      legacy,
+    });
+    const context = await service.probeGameContext({
+      gameRoot: fixture.gameRoot,
+      gameId: "1303",
+      gameName: "Stardew Valley",
+      nexusDomainName: "stardewvalley",
+      operatingSystem: "win32",
+      anchorPaths: ["ExampleGame.exe"],
+      writableRoots: ["Mods"],
+      liveModRoots: ["Mods"],
+    });
+    const evidence = await service.prepareEvidence({
+      archivePath: fixture.archivePath,
+      receiptPath: fixture.receiptPath,
+      gameContextId: context.gameContextId,
+    });
+
+    const queried = await service.queryMethods({
+      evidencePackId: evidence.evidencePackId,
+      gameContextId: context.gameContextId,
+    });
+    expect(queried.contextAdvisories).toEqual([
+      expect.objectContaining({
+        code: "REGISTERED_PROFILE_AVAILABLE",
+        legacyProfileId: "stardew-valley",
+      }),
+    ]);
+    expect(queried.proposalReadiness).toMatchObject({
+      canSubmitFileProposal: false,
+      recommendedAction: "reprobe_with_legacy_profile",
+      blockers: expect.arrayContaining([
+        {
+          code: "REGISTERED_PROFILE_AVAILABLE",
+          message: expect.any(String),
+        },
+      ]),
+    });
   });
 });

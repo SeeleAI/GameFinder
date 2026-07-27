@@ -4,13 +4,13 @@
 
 Require an exact absolute `gameRoot`.
 
-When a registered legacy profile is available:
+Call `list_game_profiles` before constructing a Context. If the exact game identity or Nexus domain matches a registered profile, use it:
 
 ```text
 probe_game_context(gameRoot, legacyProfileId)
 ```
 
-For an unseen game, first collect local evidence for:
+Do not replace a stable profile/game ID with a Nexus numeric game ID. Use explicit Context fields only when no registered profile matches. For an unseen game, first collect local evidence for:
 
 - stable game identity and Nexus domain;
 - one or more existing game-root-relative anchor paths;
@@ -42,6 +42,13 @@ Call:
 query_install_methods(evidencePackId, gameContextId)
 ```
 
+Read `proposalReadiness`, `operationCapabilities`, and `contextAdvisories` before selecting a strategy:
+
+- `reprobe_with_legacy_profile`: call `probe_game_context` with the returned `legacyProfileId`, then prepare a new Evidence Pack bound to that Context and query again.
+- `stop_before_proposal`: preserve Evidence and Context, report every blocker and stop. Do not call `submit_install_proposal`.
+- `select_verified_method`: bind the exact verified candidate.
+- `construct_agent_file_proposal`: research and construct the smallest evidence-backed file Proposal.
+
 Prefer an exact verified Method candidate. A legacy Adapter candidate is compatibility evidence, not exclusive planning authority.
 
 If no candidate matches, do not stop with `ADAPTER_NOT_FOUND`. Inspect the Evidence Pack and Game Context, consult authoritative package documentation when needed, and derive the smallest bounded Proposal supported by evidence.
@@ -59,11 +66,13 @@ strategyBinding:
 
 Every operation needs an exact source path from the selected package unit and an exact game-root-relative target. Use `exclusive_tree` only when the whole target directory belongs to this Mod; otherwise use `installed_file_set`. Never use `layered_path` for an M2 `install_tree`.
 
-If installation requires an executable installer, submit no fake file-copy plan. M2 must return `OPERATION_CAPABILITY_MISSING`; M3 will add bounded `run_bundled_installer`.
+Never invent `packageUnitId`, `packageRoot`, entry hashes, evidence IDs, or installer fields. If Evidence has no selectable package unit, stop according to `proposalReadiness`.
+
+If installation requires an executable installer, submit neither a fake file-copy Plan nor an incomplete capability-probe Proposal. Report the `runBundledInstaller` capability snapshot returned by `query_install_methods`, including `OPERATION_CAPABILITY_MISSING`, and preserve Evidence/Context for M3.
 
 ## 4. Validate and freeze
 
-Call:
+Call only when `proposalReadiness.canSubmitFileProposal` is true:
 
 ```text
 submit_install_proposal(evidencePackId, gameContextId, draft)

@@ -25,17 +25,17 @@ Read:
 
 ## Core behavior
 
-1. Establish or retrieve a Dynamic Game Context for the exact game root.
+1. Call `list_game_profiles`, then establish a Dynamic Game Context. Use a matching `legacyProfileId`; use explicit identity only for an unregistered game.
 2. Prepare an immutable Evidence Pack for each verified Archive.
-3. Query reusable installation Methods.
-4. If no Method matches, inspect the evidence and local game context, research only what is needed, and submit a bounded Agent Proposal. Do not ask the user to develop an Adapter.
+3. Query reusable installation Methods and obey `proposalReadiness.recommendedAction`.
+4. Submit a Proposal only when the result permits it. Never invent a package unit. If no Method matches but a file Proposal is ready, research only what is needed and submit a bounded Agent Proposal. Do not ask the user to develop an Adapter.
 5. Freeze a Plan and show its source, selected package, exact game root, strategy, target operations, conflicts, risk, reversibility, approval digest, `planId`, and expiry.
 6. Stop for explicit approval of that exact Plan.
 7. Apply with only `planId`, then verify the resulting `installationId`.
 
 For Bundles, process required dependencies in `installOrder`. Freeze and approve one current Plan at a time; do not preapprove later nodes.
 
-M2 executes bounded file-tree installation without a prewritten Adapter. If the evidence requires `run_bundled_installer`, report `OPERATION_CAPABILITY_MISSING` and preserve the Evidence/Context; controlled installer execution arrives in M3. This is a missing generic operation capability, not a request to write a Mod-specific Adapter.
+M2 executes bounded file-tree installation without a prewritten Adapter. If query results show no selectable package unit or unavailable `run_bundled_installer`, stop before Proposal submission, report `OPERATION_CAPABILITY_MISSING` from the capability snapshot, and preserve the Evidence/Context. Controlled installer execution arrives in M3; this is not a request to write a Mod-specific Adapter.
 
 ## Hard boundaries
 

@@ -106,7 +106,55 @@ export interface AgenticMethodQueryResult {
   evidence: EvidencePack;
   context: DynamicGameContext;
   candidates: ReadonlyArray<MethodProviderCandidate>;
+  operationCapabilities: {
+    installTree: {
+      operationKind: "install_tree";
+      state: "available";
+      executableIn: "M2";
+    };
+    runBundledInstaller: {
+      operationKind: "run_bundled_installer";
+      state: "unavailable";
+      errorCode: "OPERATION_CAPABILITY_MISSING";
+      plannedFor: "M3";
+    };
+  };
+  proposalReadiness: {
+    packageUnitCount: number;
+    canSubmitFileProposal: boolean;
+    recommendedAction:
+      | "reprobe_with_legacy_profile"
+      | "select_verified_method"
+      | "construct_agent_file_proposal"
+      | "stop_before_proposal";
+    blockers: ReadonlyArray<{
+      code:
+        | "REGISTERED_PROFILE_AVAILABLE"
+        | "PACKAGE_UNIT_MISSING"
+        | "OPERATION_CAPABILITY_MISSING";
+      message: string;
+    }>;
+  };
+  contextAdvisories: ReadonlyArray<{
+    code: "REGISTERED_PROFILE_AVAILABLE";
+    legacyProfileId: string;
+    message: string;
+  }>;
 }
+
+const M2_OPERATION_CAPABILITIES = {
+  installTree: {
+    operationKind: "install_tree",
+    state: "available",
+    executableIn: "M2",
+  },
+  runBundledInstaller: {
+    operationKind: "run_bundled_installer",
+    state: "unavailable",
+    errorCode: "OPERATION_CAPABILITY_MISSING",
+    plannedFor: "M3",
+  },
+} as const;
 
 function operatingSystem(
   value: NodeJS.Platform,
@@ -674,6 +722,23 @@ export class AgenticInstallService {
       );
     }
     const candidates: MethodProviderCandidate[] = [];
+    const contextAdvisories =
+      context.legacyProfileBinding === null
+        ? this.#legacy
+            .listProfiles()
+            .filter(
+              (profile) =>
+                profile.profileId === context.game.gameId ||
+                (context.game.nexusDomainName !== null &&
+                  profile.nexusDomainName.toLowerCase() ===
+                    context.game.nexusDomainName.toLowerCase()),
+            )
+            .map((profile) => ({
+              code: "REGISTERED_PROFILE_AVAILABLE" as const,
+              legacyProfileId: profile.profileId,
+              message: `Re-probe this game root with legacyProfileId ${profile.profileId} before planning so stable game identity, loader detection, and path policy are preserved.`,
+            }))
+        : [];
     const learned = await this.#methods.list({
       operatingSystem: context.instance.operatingSystem,
     });
@@ -766,7 +831,59 @@ export class AgenticInstallService {
           .query(legacyContext)),
       );
     }
-    return { evidence, context, candidates };
+    const blockers: Array<{
+      code:
+        | "REGISTERED_PROFILE_AVAILABLE"
+        | "PACKAGE_UNIT_MISSING"
+        | "OPERATION_CAPABILITY_MISSING";
+      message: string;
+    }> = [];
+    if (contextAdvisories.length > 0) {
+      blockers.push(
+        ...contextAdvisories.map((advisory) => ({
+          code: advisory.code,
+          message: advisory.message,
+        })),
+      );
+    }
+    if (evidence.packageUnits.length === 0) {
+      blockers.push({
+        code: "PACKAGE_UNIT_MISSING",
+        message:
+          "Evidence contains no selectable package unit. Do not invent packageUnitId or packageRoot values.",
+      });
+      blockers.push({
+        code: "OPERATION_CAPABILITY_MISSING",
+        message:
+          "If this archive requires its bundled installer, M2 cannot accept or execute that operation; preserve Evidence and stop before Proposal submission.",
+      });
+    }
+    const verifiedCandidate = candidates.some(
+      (candidate) => candidate.state === "verified_match",
+    );
+    const recommendedAction =
+      contextAdvisories.length > 0
+        ? ("reprobe_with_legacy_profile" as const)
+        : evidence.packageUnits.length === 0
+          ? ("stop_before_proposal" as const)
+          : verifiedCandidate
+            ? ("select_verified_method" as const)
+            : ("construct_agent_file_proposal" as const);
+    return {
+      evidence,
+      context,
+      candidates,
+      operationCapabilities: M2_OPERATION_CAPABILITIES,
+      proposalReadiness: {
+        packageUnitCount: evidence.packageUnits.length,
+        canSubmitFileProposal:
+          evidence.packageUnits.length > 0 &&
+          contextAdvisories.length === 0,
+        recommendedAction,
+        blockers,
+      },
+      contextAdvisories,
+    };
   }
 
   async submitProposal(input: {
@@ -789,6 +906,20 @@ export class AgenticInstallService {
         "EVIDENCE_CONFLICT",
         "Evidence Pack is bound to a different Dynamic Game Context.",
       );
+    }
+    for (const operation of draft.operations) {
+      if (operation.kind === "run_bundled_installer") {
+        throw new NexusError(
+          "OPERATION_CAPABILITY_MISSING",
+          "M2 accepts the bounded-installer contract but does not execute it before M3.",
+        );
+      }
+      if (operation.kind !== "install_tree") {
+        throw new NexusError(
+          "OPERATION_CAPABILITY_MISSING",
+          `M2 currently freezes install_tree operations; ${operation.kind} remains a later generic capability.`,
+        );
+      }
     }
     const unit = selectedPackage(evidence, draft.selection.packageUnitId);
     if (draft.selection.packageRoot !== unit.packageRoot) {
@@ -895,18 +1026,7 @@ export class AgenticInstallService {
     const writableRoots = gameRelativeRoots(context, "writableRoots");
     const protectedRoots = gameRelativeRoots(context, "protectedRoots");
     for (const operation of draft.operations) {
-      if (operation.kind === "run_bundled_installer") {
-        throw new NexusError(
-          "OPERATION_CAPABILITY_MISSING",
-          "M2 accepts the bounded-installer contract but does not execute it before M3.",
-        );
-      }
-      if (operation.kind !== "install_tree") {
-        throw new NexusError(
-          "OPERATION_CAPABILITY_MISSING",
-          `M2 currently freezes install_tree operations; ${operation.kind} remains a later generic capability.`,
-        );
-      }
+      if (operation.kind !== "install_tree") continue;
       if (operation.sourceRelativePath !== unit.packageRoot) {
         throw new NexusError(
           "PROPOSAL_INVALID",

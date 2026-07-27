@@ -179,7 +179,7 @@ export function createNexusMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: probe_game_context, prepare_install_evidence, query_install_methods, submit_install_proposal, freeze_install_plan, show the immutable plan, and call apply_agentic_install_plan with only planId after explicit approval. V2 may use a verified learned Method, a legacy Adapter candidate, or a bounded Agent proposal; lack of a prewritten Adapter is not itself a blocker. Never replace MCP installation tools with shell copy, extraction, or deletion. rollback_mod_install recovers incomplete transactions; it is not uninstall."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. For an executable file Proposal, call submit_install_proposal, freeze_install_plan, show the immutable plan, and call apply_agentic_install_plan with only planId after explicit approval. V2 may use a verified learned Method, a legacy Adapter candidate, or a bounded Agent proposal; lack of a prewritten Adapter is not itself a blocker. Never replace MCP installation tools with shell copy, extraction, or deletion. rollback_mod_install recovers incomplete transactions; it is not uninstall."
     }
   );
 
@@ -860,7 +860,7 @@ export function createNexusMcpServer(
     {
       title: "Probe a Dynamic Game Context",
       description:
-        "Create an immutable Contract V2 Dynamic Game Context for one exact game root. Use legacyProfileId when a registered profile exists; otherwise provide explicit game identity, anchor paths, and bounded writable roots. Does not modify game files.",
+        "Create an immutable Contract V2 Dynamic Game Context for one exact game root. Call list_game_profiles first and use legacyProfileId when a registered profile matches; use explicit identity and bounded roots only for an unregistered game. Do not substitute a Nexus numeric game ID for the stable profile/game ID. Does not modify game files.",
       inputSchema: {
         gameRoot: z.string().min(3).describe("Exact absolute game installation root."),
         legacyProfileId: z
@@ -1061,7 +1061,7 @@ export function createNexusMcpServer(
     {
       title: "Query reusable installation methods",
       description:
-        "Evaluate current Evidence and Dynamic Game Context against verified Method Store entries and legacy Adapter compatibility providers. An empty result means the Agent should research and submit a bounded Proposal; it does not require new code.",
+        "Evaluate current Evidence and Dynamic Game Context against verified Method Store entries and legacy Adapter compatibility providers. Also returns M2 operation capabilities, package-unit Proposal readiness, and registered-profile advisories. Follow recommendedAction; never invent a package unit or submit an installer Proposal when it says stop_before_proposal.",
       inputSchema: {
         evidencePackId: z.string().uuid(),
         gameContextId: z.string().uuid()
@@ -1073,16 +1073,30 @@ export function createNexusMcpServer(
         const result = await (
           await agenticInstalls()
         ).queryMethods({ evidencePackId, gameContextId });
+        const summary =
+          result.proposalReadiness.recommendedAction ===
+          "reprobe_with_legacy_profile"
+            ? "A registered Game Profile matches this explicit Context; re-probe with the returned legacyProfileId before planning."
+            : result.proposalReadiness.recommendedAction ===
+                "stop_before_proposal"
+              ? "Evidence has no selectable package unit. Stop before Proposal submission; bundled-installer execution is unavailable in M2."
+              : result.proposalReadiness.recommendedAction ===
+                  "construct_agent_file_proposal"
+                ? "No verified reusable installation Method matched; construct an evidence-bounded file Proposal."
+                : `Found ${result.candidates.length} installation Method candidates.`;
         return ok(
-          result.candidates.length === 0
-            ? "No reusable installation Method matched; construct an evidence-bounded Agent Proposal."
-            : `Found ${result.candidates.length} installation Method candidates.`,
+          summary,
           {
             ok: true,
             evidencePackId: result.evidence.evidencePackId,
             gameContextId: result.context.gameContextId,
             candidates: result.candidates,
-            requiresAgentResearch: result.candidates.length === 0,
+            requiresAgentResearch:
+              result.proposalReadiness.recommendedAction ===
+              "construct_agent_file_proposal",
+            operationCapabilities: result.operationCapabilities,
+            proposalReadiness: result.proposalReadiness,
+            contextAdvisories: result.contextAdvisories,
             meta: meta("local", null)
           }
         );

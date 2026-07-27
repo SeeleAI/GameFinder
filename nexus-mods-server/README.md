@@ -229,9 +229,9 @@ Completed status includes the absolute archive path and a non-secret JSON receip
 
 Contract V2 can plan a bounded file-type Mod installation even when the game has no registered Profile and the package has no prewritten Adapter:
 
-1. Call `probe_game_context` for the exact game root. Use `legacyProfileId` when available, or provide explicit game identity, real anchor paths, and narrowly bounded writable/protected roots.
+1. Call `list_game_profiles`, then `probe_game_context` for the exact game root. Use a matching `legacyProfileId`; provide explicit identity and narrowly bounded roots only for an unregistered game. Do not substitute a Nexus numeric game ID for the stable profile/game ID.
 2. Call `prepare_install_evidence` with the exact Archive, matching Nexus receipt, and `gameContextId`.
-3. Call `query_install_methods`. Reuse a `verified_match`, or derive an evidence-bounded Agent Proposal when no Method matches.
+3. Call `query_install_methods` and obey `proposalReadiness.recommendedAction`. Re-probe a matching registered profile, stop before Proposal when no package unit exists, reuse a `verified_match`, or derive an evidence-bounded file Proposal only when permitted.
 4. Call `submit_install_proposal`, then `freeze_install_plan`.
 5. Display the returned operations, targets, conflicts, risk, reversibility, approval digest, expiry, and `planId`. The game is still unchanged.
 6. After explicit approval, call `apply_agentic_install_plan` with only that `planId`.
@@ -239,7 +239,7 @@ Contract V2 can plan a bounded file-type Mod installation even when the game has
 
 The M2 executor supports a selected package tree installed under a declared writable root. It rejects protected paths, stale hashes, unresolved choices, unsupported ownership, and mutable apply arguments. Writes reuse the existing process guard, instance lock, backup, transaction journal, static verification, and rollback engine.
 
-`run_bundled_installer` is part of Contract V2 but is not executable until M3 adds bounded process execution, side-effect observation, and the full dependency/loader orchestration loop. M2 returns `OPERATION_CAPABILITY_MISSING`; this does not require a game- or Mod-specific Adapter.
+`run_bundled_installer` is part of Contract V2 but is not executable until M3 adds bounded process execution, side-effect observation, and the full dependency/loader orchestration loop. `query_install_methods` reports that stable capability state as `OPERATION_CAPABILITY_MISSING`. If Evidence has no package unit, stop before Proposal instead of inventing selection or entry data. This does not require a game- or Mod-specific Adapter.
 
 ## Browser configuration
 

@@ -934,6 +934,14 @@ Uninstall Planner 继续读取：
 - 新增端到端测试证明：未注册游戏、无候选 Method、无预编写 Game/Mod Adapter 时，Agent Proposal 可以冻结计划；冻结前不修改游戏；批准后通过事务引擎完成文件型安装和静态验证。
 - `run_bundled_installer` 仍按设计返回 `OPERATION_CAPABILITY_MISSING`，留给 M3 的受控进程执行能力；这不等价于要求开发 Mod 专用 Adapter。
 
+M2 独立 Session 收尾修正（2026-07-27）：
+
+- `query_install_methods` 同时返回稳定的 `operationCapabilities`、`proposalReadiness` 和 `contextAdvisories`，使 Agent 无需提交无效 Proposal 来探测 M3 能力。
+- Evidence 没有 selectable package unit 时返回 `stop_before_proposal`，明确禁止虚构 `packageUnitId`、`packageRoot`、entry hash 或 Evidence ID。
+- 显式 Context 与已注册 Game Profile 的 Nexus domain/身份重合时返回 `reprobe_with_legacy_profile`，要求用稳定 `legacyProfileId` 重建 Context 与 Evidence。
+- 对 schema 合法的 `run_bundled_installer` Proposal，Validator 在 package selection 前稳定返回 `OPERATION_CAPABILITY_MISSING`；schema 不完整的调用仍由 MCP 输入校验拒绝。
+- Skill 改为严格服从 `recommendedAction`：安装器缺少 package unit 时直接保留 Evidence/Context 并停止，不再重复提交 capability-probe Proposal。
+
 ### M3：受控安装器与依赖闭环
 
 - 实现 `run_bundled_installer` 通用能力。

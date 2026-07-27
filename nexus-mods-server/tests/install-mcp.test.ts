@@ -339,9 +339,9 @@ describe("Phase 6B-4 installation MCP", () => {
       name: "probe_game_context",
       arguments: {
         gameRoot: fixture.gameRoot,
-        gameId: "stardew-valley-unregistered",
-        gameName: "Stardew Valley Test Context",
-        nexusDomainName: "stardewvalley",
+        gameId: "unregistered-test-game",
+        gameName: "Unregistered Test Game",
+        nexusDomainName: "unregistered-test-game",
         operatingSystem: "win32",
         anchorPaths: ["Stardew Valley.exe"],
         writableRoots: ["Mods"],
@@ -384,6 +384,21 @@ describe("Phase 6B-4 installation MCP", () => {
       ok: true,
       candidates: [],
       requiresAgentResearch: true,
+      operationCapabilities: {
+        installTree: { state: "available", executableIn: "M2" },
+        runBundledInstaller: {
+          state: "unavailable",
+          errorCode: "OPERATION_CAPABILITY_MISSING",
+          plannedFor: "M3",
+        },
+      },
+      proposalReadiness: {
+        packageUnitCount: 1,
+        canSubmitFileProposal: true,
+        recommendedAction: "construct_agent_file_proposal",
+        blockers: [],
+      },
+      contextAdvisories: [],
     });
 
     const proposed = await client.callTool({

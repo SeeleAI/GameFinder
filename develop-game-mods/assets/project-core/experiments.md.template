@@ -1,0 +1,21 @@
+# Experiments
+
+Record raw experiments, including failures and contradictory results. Split this file later if its size makes that useful.
+
+## Experiment Template
+
+### {{DATE}} — <question>
+
+- Requirement:
+- Environment and versions:
+- Hypothesis:
+- Reference or interface:
+- Change / probe:
+- Parameters:
+- Expected observation:
+- Actual observation:
+- Log / error:
+- Cleanup / rollback:
+- Conclusion:
+- Evidence state:
+- Next step:

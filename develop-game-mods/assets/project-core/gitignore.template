@@ -1,0 +1,17 @@
+# Local machine and editor state
+.mod-project.local.*
+.vs/
+*.user
+
+# Runtime logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Common language caches
+__pycache__/
+.pytest_cache/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db

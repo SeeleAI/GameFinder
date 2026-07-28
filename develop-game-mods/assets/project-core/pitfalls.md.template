@@ -1,0 +1,16 @@
+# Pitfalls
+
+Record only repeatable, evidence-backed errors or traps. Scope every entry so a local conclusion does not become a universal rule.
+
+## Pitfall Template
+
+### <short symptom>
+
+- Game / runtime / language:
+- Applicable versions:
+- Symptom or error:
+- Root cause:
+- Verified fix or avoidance:
+- Misleading workaround:
+- Evidence:
+- Last verified:

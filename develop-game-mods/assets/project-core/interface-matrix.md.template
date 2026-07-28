@@ -1,0 +1,31 @@
+# Interface Matrix
+
+Use this file as a reusable capability cache. Entries are leads whose version and evidence must be checked before reuse.
+
+## Evidence States
+
+- `Confirmed`
+- `Probable`
+- `Hypothesis`
+- `Known-bad`
+- `Stale / needs revalidation`
+
+## Capability Index
+
+| Capability | Game / Runtime | Interface or Entry Point | Evidence | Versions | Last Verified |
+| --- | --- | --- | --- | --- | --- |
+| Example: register Mod input | {{GAME_NAME}} / unknown | To be researched | Hypothesis | Unknown | {{DATE}} |
+
+## Entry Template
+
+### Capability: <name>
+
+- Game / runtime:
+- Interface, type, receiver, resource, or entry point:
+- Evidence state:
+- Applicable versions:
+- Ownership / lifecycle:
+- Known limitations:
+- Source:
+- Last verified:
+- Related experiment:

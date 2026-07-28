@@ -1,0 +1,40 @@
+# {{PROJECT_NAME}}
+
+Created: {{DATE}}
+
+## Project Context
+
+- Game: {{GAME_NAME}}
+- Mod form: To be researched
+- Current status: Initialized
+
+## Development Environment
+
+- Game version:
+- Loader / SDK / editor:
+- Language / asset tools:
+- Repository location:
+- Runtime or deployment target:
+
+## Working Procedures
+
+- Build:
+- Deploy:
+- Launch / reload:
+- Logs / console:
+- Cleanup / rollback:
+
+## Current Conventions
+
+- Follow authoritative game, loader, SDK, or editor templates when available.
+- Keep machine-specific paths out of version control when the ecosystem permits it.
+- Record reusable interfaces in `docs/interface-matrix.md`.
+- Record raw tests in `docs/experiments.md`.
+- Record repeatable errors in `docs/pitfalls.md`.
+
+## Reference Material
+
+- Local game source / SDK:
+- Existing Mods:
+- Documentation:
+- Other artifacts:

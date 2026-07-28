@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop Game Mods"
+  short_description: "Research, initialize, and develop game mods"
+  default_prompt: "Use $develop-game-mods to research, initialize, or implement this game mod task."

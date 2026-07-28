@@ -10,6 +10,15 @@ import { OrdinaryCdpBrowserManager } from "../src/browser/ordinary-cdp-browser-m
 const enabled = process.env.NEXUS_BROWSER_INTEGRATION_TEST === "1";
 const temporaryDirectories: string[] = [];
 
+async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Condition was not met within ${timeoutMs} ms.`);
+}
+
 afterAll(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -105,6 +114,40 @@ describe.skipIf(!enabled)("persistent Chromium integration", () => {
       });
     } finally {
       await second.close();
+    }
+  }, 60_000);
+
+  it("releases the ordinary Chromium Profile lock after an external CDP disconnect", async () => {
+    const engineExecutablePath = process.env.NEXUS_BROWSER_INTEGRATION_EXECUTABLE ?? chromium.executablePath();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "nexus-ordinary-browser-disconnect-"));
+    temporaryDirectories.push(directory);
+    const config = {
+      profileDir: path.join(directory, "profile"),
+      launchTimeoutMs: 30_000,
+      navigationTimeoutMs: 45_000,
+      downloadStartTimeoutMs: 120_000,
+      downloadTimeoutMs: 0,
+      loginWaitMs: 900_000,
+      keepOpen: true
+    };
+    const first = new OrdinaryCdpBrowserManager(config, engineExecutablePath);
+    const second = new OrdinaryCdpBrowserManager(config, engineExecutablePath);
+
+    try {
+      const firstPage = await first.getPage();
+      const attachedBrowser = firstPage.context().browser();
+      if (!attachedBrowser) throw new Error("Expected a CDP-attached Browser.");
+      await attachedBrowser.close();
+
+      await waitUntil(async () => !(await second.status()).profileBusy);
+      const secondPage = await second.getPage();
+      expect(secondPage.isClosed()).toBe(false);
+      expect(await second.status()).toMatchObject({
+        running: true,
+        profileBusy: false
+      });
+    } finally {
+      await Promise.allSettled([first.close(), second.close()]);
     }
   }, 60_000);
 });

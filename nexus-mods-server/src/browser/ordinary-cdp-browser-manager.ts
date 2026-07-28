@@ -45,22 +45,26 @@ async function waitForCdp(port: number, child: ChildProcess, timeoutMs: number):
   });
 }
 
-async function terminate(child: ChildProcess | undefined): Promise<void> {
-  if (!child || child.exitCode !== null) return;
-  child.kill();
-  const exited = await Promise.race([
-    new Promise<boolean>((resolve) => child.once("exit", () => resolve(true))),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000))
-  ]);
-  if (!exited && child.pid) process.kill(child.pid);
-}
-
 async function waitForExit(child: ChildProcess | undefined, timeoutMs: number): Promise<boolean> {
   if (!child || child.exitCode !== null) return true;
   return Promise.race([
     new Promise<boolean>((resolve) => child.once("exit", () => resolve(true))),
     new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs))
   ]);
+}
+
+async function terminate(child: ChildProcess | undefined): Promise<boolean> {
+  if (!child || child.exitCode !== null) return true;
+  child.kill();
+  if (await waitForExit(child, 5_000)) return true;
+  if (!child.pid) return false;
+  try {
+    process.kill(child.pid);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+    return false;
+  }
+  return waitForExit(child, 5_000);
 }
 
 export class OrdinaryCdpBrowserManager {
@@ -73,6 +77,7 @@ export class OrdinaryCdpBrowserManager {
   #page: Page | undefined;
   #child: ChildProcess | undefined;
   #starting: Promise<Page> | undefined;
+  #cleanup: Promise<void> | undefined;
 
   constructor(
     config: BrowserConfig = loadBrowserConfig(),
@@ -99,6 +104,7 @@ export class OrdinaryCdpBrowserManager {
   }
 
   async getPage(startUrl = "about:blank"): Promise<Page> {
+    if (this.#cleanup) await this.#cleanup;
     if (this.#page && !this.#page.isClosed()) return this.#page;
     if (this.#starting) return this.#starting;
     this.#starting = this.#start(startUrl);
@@ -138,13 +144,14 @@ export class OrdinaryCdpBrowserManager {
         }
       );
       this.#child = child;
+      child.once("exit", () => {
+        void this.#scheduleCleanup(child, false).catch(() => undefined);
+      });
       const endpoint = await waitForCdp(port, child, this.config.launchTimeoutMs);
       const browser = await chromium.connectOverCDP(endpoint);
       this.#browser = browser;
       browser.once("disconnected", () => {
-        this.#browser = undefined;
-        this.#context = undefined;
-        this.#page = undefined;
+        void this.#scheduleCleanup(child, true).catch(() => undefined);
       });
       const context = browser.contexts()[0];
       if (!context) throw new NexusError("BROWSER_LAUNCH_FAILED", "CDP did not expose the ordinary Chromium context.");
@@ -154,9 +161,7 @@ export class OrdinaryCdpBrowserManager {
       this.#page = page;
       return page;
     } catch (error) {
-      await terminate(this.#child);
-      this.#child = undefined;
-      await this.#lock.release();
+      await this.#scheduleCleanup(this.#child, true);
       if (error instanceof NexusError) throw error;
       throw new NexusError("BROWSER_LAUNCH_FAILED", "Could not start or attach to ordinary Chromium.", {
         retryable: true,
@@ -165,7 +170,40 @@ export class OrdinaryCdpBrowserManager {
     }
   }
 
+  #scheduleCleanup(child: ChildProcess | undefined, terminateIfRunning: boolean): Promise<void> {
+    if (child && this.#child !== child) return Promise.resolve();
+    this.#browser = undefined;
+    this.#context = undefined;
+    this.#page = undefined;
+    if (this.#cleanup) return this.#cleanup;
+
+    const cleanup = (async () => {
+      const exited =
+        (await waitForExit(child, 5_000)) ||
+        (terminateIfRunning && (await terminate(child)));
+      if (!exited) {
+        throw new NexusError(
+          "BROWSER_LAUNCH_FAILED",
+          "Ordinary Chromium did not exit; the dedicated Profile lock was retained.",
+          { retryable: true }
+        );
+      }
+      if (this.#child === child) this.#child = undefined;
+      await this.#lock.release();
+    })();
+    this.#cleanup = cleanup;
+    void cleanup.finally(() => {
+      if (this.#cleanup === cleanup) this.#cleanup = undefined;
+    }).catch(() => undefined);
+    return cleanup;
+  }
+
   async close(): Promise<void> {
+    if (this.#cleanup) {
+      await this.#cleanup;
+      return;
+    }
+    const child = this.#child;
     const browser = this.#browser;
     this.#browser = undefined;
     this.#context = undefined;
@@ -173,11 +211,7 @@ export class OrdinaryCdpBrowserManager {
     try {
       if (browser?.isConnected()) await browser.close();
     } finally {
-      if (!(await waitForExit(this.#child, 5_000))) {
-        await terminate(this.#child);
-      }
-      this.#child = undefined;
-      await this.#lock.release();
+      await this.#scheduleCleanup(child, true);
     }
   }
 }

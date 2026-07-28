@@ -1,6 +1,6 @@
 # Phase 6B V2：Agentic Mod 安装与本地经验学习架构
 
-> 状态：架构基线已固定；M1–M3 已实现并通过本地回归，M4 待开发
+> 状态：架构基线已固定；M1–M3 已实现并通过本地回归，M4 实现与真实验收进行中
 >
 > 固定日期：2026-07-27
 >
@@ -967,5 +967,20 @@ M2 独立 Session 收尾修正（2026-07-27）：
 - 完成新任务中的暖启动复用。
 - 完成第二个 SMAPI Mod 的泛化验收。
 - 验证 Installation Record 到 Uninstall Plan 的完整交接。
+
+实施进度（2026-07-28）：
+
+- 成功的 `agent_proposal` 现在会从实际 Proposal、Plan、Evidence、Context 和 Installation Record 派生结构化 Method，依次写入 `draft`、`session_approved`、`local_verified` revision，并追加不可变的成功 Method Outcome。安装已提交但学习写入失败时会返回独立 warning，不会伪装成安装失败。
+- 新增 `instantiate_install_method`。它只接受当前 Evidence/Context 下的精确 `verified_match`、Method revision/hash 和 package unit，重新解析当前入口 hash、game root 与包名模板，再经过普通 Proposal Validator；Method 复用不会绕过 Plan freeze 和人工审批。
+- Method Resolver 改为按 package unit 计算匹配，避免多组件 Archive 中“一个 unit 命中、所有 unit 都被授权”的错误扩大。
+- 沙箱验收已证明：首次 Agent 文件安装沉淀 `local_verified` Method；全新 `AgenticInstallService` 实例能从同一 Method Store 暖启动；第二个不同标准 SMAPI Mod 能复用包根与目标模板，并向同一 Method revision 追加 Outcome。
+- `InstallService` 已接通既有 Uninstall Planner/Engine。Agentic 文件型 Installation Record 可冻结独立 Uninstall Plan，并通过实际 operation outcomes、ownership、pre/post state 和当前磁盘状态完成卸载；Method 不参与推导卸载事实。
+- 真实 Bundle 的 SMAPI 2400 节点已经通过 Archive/receipt/Bundle hash、Dynamic Game Context、Package Unit、entry SHA-256、最小声明写入根和 postconditions 校验，并冻结出高风险受控安装器 Plan。
+- 用户批准后，旧 Plan 通过原有 `redirected_stdio` 路径执行。SMAPI 的 `--no-prompt` 路径仍会调用 `Console.Clear()`；由于重定向执行没有真实控制台，进程异常退出。引擎没有观察到写入，完整恢复了声明根，并留下 `rolled_back` Installation Record。该结果证明问题位于通用进程终端能力，而不是 SMAPI 专用安装知识。
+- Contract、Proposal、Plan、Installation Record 与可学习 Method 模板现支持可选 `terminalMode`：默认 `redirected_stdio`，只有证据证明需要控制台时才选择 `pseudoterminal`。旧对象缺少该字段时仍按默认模式解释，保持既有 hash/Record 兼容。
+- `pseudoterminal` 当前由 Windows ConPTY 和可选 `node-pty` 依赖提供；它只提供真实控制台语义和有界、去控制序列的合并输出，不发送按键，不回答交互式选择，也不放宽参数、环境、超时、写入根、副作用观察、备份、Journal 或恢复约束。
+- `query_install_methods.operationCapabilities` 公开两种 terminal mode 的宿主可用性。Validator 只允许 Windows MCP 宿主与 Windows Dynamic Game Context 使用 ConPTY，并在冻结前以 `OPERATION_CAPABILITY_MISSING` 拒绝不支持的组合。
+- 定向回归覆盖 ConPTY 控制台检测成功、终端输出净化、terminal mode 写入 Method、超时进程树终止与声明根回滚，以及非 Windows Context 的冻结前拒绝。
+- 旧失败 Plan 及其 Installation Record 保持不可变且不会重跑。能力完成后必须从当前 Bundle、Context 与 Evidence 重新生成并展示一个新的 SMAPI Plan，仍需用户对新 `planId` 单独批准。
 
 每个里程碑完成后单独提交和验收。M4 通过后，V1 规划层代码才能正式标记为退役。

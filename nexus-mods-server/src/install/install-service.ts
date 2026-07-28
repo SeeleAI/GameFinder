@@ -25,6 +25,14 @@ import {
   type ApplyInstallResult,
 } from "./core/transaction-engine.js";
 import {
+  UninstallEngine,
+  type ApplyUninstallResult,
+} from "./core/uninstall-engine.js";
+import {
+  planModUninstall,
+  type UninstallPlanResult,
+} from "./core/uninstall-planner.js";
+import {
   verifyInstallInput,
   type ExpectedNexusSource,
   type VerifiedInstallInput,
@@ -39,6 +47,7 @@ import { InstallationRecordStore } from "./storage/installation-record-store.js"
 import { PlanExecutionContextStore } from "./storage/plan-execution-context-store.js";
 import { PlanStore } from "./storage/plan-store.js";
 import { TransactionJournalStore } from "./storage/transaction-journal-store.js";
+import { UninstallPlanStore } from "./storage/uninstall-plan-store.js";
 import {
   AGENTIC_FILE_METHOD_ADAPTER_ID,
   AgenticFileMethodAdapter,
@@ -192,6 +201,7 @@ export class InstallService {
   readonly #backupStore: BackupStore;
   readonly #journalStore: TransactionJournalStore;
   readonly #recordStore: InstallationRecordStore;
+  readonly #uninstallPlanStore: UninstallPlanStore;
 
   private constructor(input: {
     managerRoot: string;
@@ -202,6 +212,7 @@ export class InstallService {
     backupStore: BackupStore;
     journalStore: TransactionJournalStore;
     recordStore: InstallationRecordStore;
+    uninstallPlanStore: UninstallPlanStore;
   }) {
     this.managerRoot = input.managerRoot;
     this.#profiles = input.profiles;
@@ -211,6 +222,7 @@ export class InstallService {
     this.#backupStore = input.backupStore;
     this.#journalStore = input.journalStore;
     this.#recordStore = input.recordStore;
+    this.#uninstallPlanStore = input.uninstallPlanStore;
   }
 
   static async create(options: { managerRoot?: string } = {}): Promise<InstallService> {
@@ -229,12 +241,14 @@ export class InstallService {
       backupStore,
       journalStore,
       recordStore,
+      uninstallPlanStore,
     ] = await Promise.all([
       PlanStore.create({ managerRoot }),
       PlanExecutionContextStore.create(managerRoot),
       BackupStore.create(managerRoot),
       TransactionJournalStore.create(managerRoot),
       InstallationRecordStore.create(managerRoot),
+      UninstallPlanStore.create({ managerRoot }),
     ]);
     return new InstallService({
       managerRoot,
@@ -250,6 +264,7 @@ export class InstallService {
       backupStore,
       journalStore,
       recordStore,
+      uninstallPlanStore,
     });
   }
 
@@ -501,6 +516,47 @@ export class InstallService {
       staticVerification,
       runtimeVerification,
     };
+  }
+
+  async planUninstall(
+    installationId: string,
+    options: { ttlMs?: number } = {},
+  ): Promise<UninstallPlanResult> {
+    const record = await this.#recordStore.get(installationId);
+    const context = await this.#contextStore.get(record.sourcePlanId);
+    return await planModUninstall({
+      record,
+      profile: context.profile,
+      instance: context.instance,
+      planStore: this.#uninstallPlanStore,
+      ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
+    });
+  }
+
+  async getUninstallPlan(uninstallPlanId: string) {
+    return await this.#uninstallPlanStore.get(uninstallPlanId, {
+      allowExpired: true,
+    });
+  }
+
+  async applyUninstall(
+    uninstallPlanId: string,
+  ): Promise<ApplyUninstallResult> {
+    const plan = await this.#uninstallPlanStore.get(uninstallPlanId);
+    const record = await this.#recordStore.get(plan.installationId);
+    const context = await this.#contextStore.get(record.sourcePlanId);
+    const engine = new UninstallEngine({
+      managerRoot: this.managerRoot,
+      planStore: this.#uninstallPlanStore,
+      backupStore: this.#backupStore,
+      journalStore: this.#journalStore,
+      recordStore: this.#recordStore,
+    });
+    return await engine.applyUninstallPlan({
+      uninstallPlanId,
+      profile: context.profile,
+      instance: context.instance,
+    });
   }
 
   async recoverInstallTransaction(transactionId: string): Promise<RecoveryResult> {

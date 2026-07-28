@@ -14,7 +14,7 @@ import type {
 } from "./contracts.js";
 import { packageAnalysisSchema } from "./contracts.js";
 
-export const PACKAGE_ANALYZER_VERSION = "package-analyzer@2";
+export const PACKAGE_ANALYZER_VERSION = "package-analyzer@3";
 
 const smapiDependencySchema = z.object({
   UniqueID: z.string().trim().min(1),
@@ -57,6 +57,10 @@ function joinArchivePath(root: string, child: string): string {
 
 function packageUnitId(uniqueId: string, packageRoot: string): string {
   return `package-${sha256CanonicalJson({ uniqueId, packageRoot }).slice(0, 24)}`;
+}
+
+function parseBoundedJsonText(text: string): unknown {
+  return JSON.parse(text.startsWith("\uFEFF") ? text.slice(1) : text) as unknown;
 }
 
 function executableInstallerCandidates(
@@ -134,13 +138,13 @@ export async function analyzePackageInventory(
   for (const entry of manifestEntries) {
     let parsedJson: unknown;
     try {
-      parsedJson = JSON.parse(
+      parsedJson = parseBoundedJsonText(
         await readZipTextEntry({
           archive: inventory.archive,
           entry,
           maxBytes: 1024 * 1024,
         }),
-      ) as unknown;
+      );
     } catch (error) {
       ambiguities.push({
         code: "other",

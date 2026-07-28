@@ -49,9 +49,18 @@ interface RootCapture {
 
 const OUTPUT_LIMIT = 64 * 1024;
 
-function appendBounded(current: string, chunk: Buffer): string {
+function appendBounded(current: string, chunk: Buffer | string): string {
   if (current.length >= OUTPUT_LIMIT) return current;
-  return `${current}${chunk.toString("utf8")}`.slice(0, OUTPUT_LIMIT);
+  return `${current}${
+    typeof chunk === "string" ? chunk : chunk.toString("utf8")
+  }`.slice(0, OUTPUT_LIMIT);
+}
+
+function cleanTerminalOutput(output: string): string {
+  return output
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-_]/g, "");
 }
 
 function minimalEnvironment(): NodeJS.ProcessEnv {
@@ -89,11 +98,10 @@ async function terminateProcessTree(pid: number): Promise<void> {
   }
 }
 
-async function runControlledProcess(input: {
+function processCommand(input: {
   operation: BundledInstallerOperation;
   entryAbsolutePath: string;
-  workingDirectoryAbsolutePath: string;
-}): Promise<ProcessResult> {
+}): { command: string; args: string[] } {
   const command =
     input.operation.entry.runtime === "native"
       ? input.entryAbsolutePath
@@ -104,6 +112,15 @@ async function runControlledProcess(input: {
     input.operation.entry.runtime === "native"
       ? input.operation.arguments
       : [input.entryAbsolutePath, ...input.operation.arguments];
+  return { command, args };
+}
+
+async function runRedirectedProcess(input: {
+  operation: BundledInstallerOperation;
+  entryAbsolutePath: string;
+  workingDirectoryAbsolutePath: string;
+}): Promise<ProcessResult> {
+  const { command, args } = processCommand(input);
   return await new Promise<ProcessResult>((resolve, reject) => {
     let stdout = "";
     let stderr = "";
@@ -152,6 +169,119 @@ async function runControlledProcess(input: {
       });
     });
   });
+}
+
+async function runPseudoterminalProcess(input: {
+  operation: BundledInstallerOperation;
+  entryAbsolutePath: string;
+  workingDirectoryAbsolutePath: string;
+}): Promise<ProcessResult> {
+  if (process.platform !== "win32") {
+    throw new NexusError(
+      "OPERATION_CAPABILITY_MISSING",
+      "The controlled pseudoterminal backend currently requires Windows ConPTY.",
+    );
+  }
+  let ptyModule: typeof import("node-pty");
+  try {
+    ptyModule = await import("node-pty");
+  } catch (error) {
+    throw new NexusError(
+      "OPERATION_CAPABILITY_MISSING",
+      "The optional node-pty runtime is unavailable; install the Windows ConPTY dependency before using pseudoterminal mode.",
+      { cause: error },
+    );
+  }
+  const { command, args } = processCommand(input);
+  return await new Promise<ProcessResult>((resolve, reject) => {
+    let output = "";
+    let timedOut = false;
+    let settled = false;
+    let forcedResolution: NodeJS.Timeout | undefined;
+    let terminal: import("node-pty").IPty;
+    const settle = (result: ProcessResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forcedResolution !== undefined) clearTimeout(forcedResolution);
+      resolve({
+        ...result,
+        stdout: cleanTerminalOutput(result.stdout),
+      });
+    };
+    try {
+      terminal = ptyModule.spawn(command, args, {
+        name: "xterm-256color",
+        cols: 120,
+        rows: 40,
+        cwd: input.workingDirectoryAbsolutePath,
+        env: minimalEnvironment(),
+        encoding: "utf8",
+        useConpty: true,
+        useConptyDll: true,
+      });
+    } catch (error) {
+      reject(
+        new NexusError(
+          "APPLY_FAILED",
+          "The controlled pseudoterminal process could not be started.",
+          {
+            cause: error,
+            details: { command, runtime: input.operation.entry.runtime },
+          },
+        ),
+      );
+      return;
+    }
+    const dataListener = terminal.onData((data) => {
+      output = appendBounded(output, data);
+    });
+    const exitListener = terminal.onExit((event) => {
+      dataListener.dispose();
+      exitListener.dispose();
+      settle({
+        exitCode: event.exitCode,
+        signal:
+          event.signal === undefined || event.signal === 0
+            ? null
+            : String(event.signal),
+        timedOut,
+        stdout: output,
+        stderr: "",
+      });
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        terminal.kill();
+      } catch {
+        // Continue with taskkill so a terminal backend failure cannot retain the process tree.
+      }
+      void terminateProcessTree(terminal.pid).finally(() => {
+        forcedResolution = setTimeout(() => {
+          dataListener.dispose();
+          exitListener.dispose();
+          settle({
+            exitCode: null,
+            signal: null,
+            timedOut: true,
+            stdout: output,
+            stderr: "",
+          });
+        }, 5_000);
+      });
+    }, input.operation.timeoutMs);
+  });
+}
+
+async function runControlledProcess(input: {
+  operation: BundledInstallerOperation;
+  entryAbsolutePath: string;
+  workingDirectoryAbsolutePath: string;
+}): Promise<ProcessResult> {
+  return input.operation.terminalMode === "pseudoterminal"
+    ? await runPseudoterminalProcess(input)
+    : await runRedirectedProcess(input);
 }
 
 async function treeFingerprint(root: string): Promise<Map<string, string>> {
@@ -532,6 +662,7 @@ export class ControlledInstallerEngine {
       state,
       process: {
         runtime: operation.entry.runtime,
+        terminalMode: operation.terminalMode ?? "redirected_stdio",
         entryRelativePath: operation.entry.relativePath,
         entrySha256: operation.entry.sha256,
         arguments: operation.arguments,
@@ -644,6 +775,8 @@ export class ControlledInstallerEngine {
       state,
       process: {
         runtime: input.operation.entry.runtime,
+        terminalMode:
+          input.operation.terminalMode ?? "redirected_stdio",
         entryRelativePath: input.operation.entry.relativePath,
         entrySha256: input.operation.entry.sha256,
         arguments: input.operation.arguments,

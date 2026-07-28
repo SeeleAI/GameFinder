@@ -49,12 +49,14 @@ import {
   computeEvidencePackHash,
   computeInstallPlanV2Hash,
   computeInstallProposalHash,
+  computeMethodOutcomeHash,
   dynamicGameContextSchema,
   evidencePackSchema,
   installPlanV2Schema,
   installProposalDraftSchema,
   installProposalSchema,
   methodProviderCandidateSchema,
+  methodOutcomeSchema,
 } from "./contracts.js";
 import type {
   DynamicGameContext,
@@ -65,10 +67,16 @@ import type {
   InstallProposal,
   InstallProposalDraft,
   InstallerInstallationRecord,
+  InstallationMethod,
+  MethodOutcome,
   MethodProviderCandidate,
   MethodSignal,
 } from "./contracts.js";
 import { MethodStore } from "./method-store.js";
+import {
+  deriveLearnedMethod,
+  instantiateLearnedMethod,
+} from "./method-learning.js";
 
 interface ExplicitGameContextInput {
   gameRoot: string;
@@ -121,6 +129,17 @@ export interface AgenticMethodQueryResult {
       operationKind: "run_bundled_installer";
       state: "available";
       executableIn: "M3";
+      terminalModes: {
+        redirectedStdio: {
+          mode: "redirected_stdio";
+          state: "available";
+        };
+        pseudoterminal: {
+          mode: "pseudoterminal";
+          state: "available" | "unavailable";
+          backend: "windows_conpty";
+        };
+      };
     };
   };
   proposalReadiness: {
@@ -149,6 +168,12 @@ export interface AgenticMethodQueryResult {
   }>;
 }
 
+export interface MethodLearningResult {
+  method: InstallationMethod | null;
+  outcome: MethodOutcome | null;
+  warning: string | null;
+}
+
 const M3_OPERATION_CAPABILITIES = {
   installTree: {
     operationKind: "install_tree",
@@ -159,6 +184,17 @@ const M3_OPERATION_CAPABILITIES = {
     operationKind: "run_bundled_installer",
     state: "available",
     executableIn: "M3",
+    terminalModes: {
+      redirectedStdio: {
+        mode: "redirected_stdio",
+        state: "available",
+      },
+      pseudoterminal: {
+        mode: "pseudoterminal",
+        state: process.platform === "win32" ? "available" : "unavailable",
+        backend: "windows_conpty",
+      },
+    },
   },
 } as const;
 
@@ -324,6 +360,7 @@ function signalMatches(
   signal: MethodSignal,
   evidence: EvidencePack,
   context: DynamicGameContext,
+  packageUnit?: PackageUnit,
 ): boolean | null {
   const expected = signal.expected;
   let values: string[];
@@ -342,7 +379,10 @@ function signalMatches(
       ]);
       break;
     case "package_type":
-      values = evidence.packageUnits.map((unit) => unit.packageType);
+      values =
+        packageUnit === undefined
+          ? evidence.packageUnits.map((unit) => unit.packageType)
+          : [packageUnit.packageType];
       break;
     case "source_identity":
       values = evidence.source.nexus
@@ -356,7 +396,15 @@ function signalMatches(
     case "path_pattern":
     case "file_name":
     case "archive_layout":
-      values = evidence.archive.entries.map((entry) => entry.relativePath);
+      values = evidence.archive.entries
+        .filter(
+          (entry) =>
+            packageUnit === undefined ||
+            packageUnit.packageRoot === "." ||
+            entry.relativePath === packageUnit.packageRoot ||
+            entry.relativePath.startsWith(`${packageUnit.packageRoot}/`),
+        )
+        .map((entry) => entry.relativePath);
       break;
     case "manifest_field":
       return null;
@@ -811,23 +859,58 @@ export class AgenticInstallService {
         ...method.scope.sourceSelectors,
         ...method.scope.packageSignals,
       ].filter((signal) => signal.required);
-      const results = requiredSignals.map((signal) => ({
-        signal,
-        matched: signalMatches(signal, evidence, context),
-      }));
-      const negativeMatched = method.scope.negativeSignals.filter(
-        (signal) => signalMatches(signal, evidence, context) === true,
-      );
-      const missing = results
-        .filter((result) => result.matched === null)
-        .map((result) => result.signal.signalId);
-      const failed = results
-        .filter((result) => result.matched === false)
-        .map((result) => result.signal.signalId);
-      const verified =
-        missing.length === 0 &&
-        failed.length === 0 &&
-        negativeMatched.length === 0;
+      const unitMatches = evidence.packageUnits.map((packageUnit) => {
+        const results = requiredSignals.map((signal) => ({
+          signal,
+          matched: signalMatches(signal, evidence, context, packageUnit),
+        }));
+        const negativeMatched = method.scope.negativeSignals.filter(
+          (signal) =>
+            signalMatches(signal, evidence, context, packageUnit) === true,
+        );
+        const missing = results
+          .filter((result) => result.matched === null)
+          .map((result) => result.signal.signalId);
+        const failed = results
+          .filter((result) => result.matched === false)
+          .map((result) => result.signal.signalId);
+        return {
+          packageUnit,
+          results,
+          negativeMatched,
+          missing,
+          failed,
+          verified:
+            missing.length === 0 &&
+            failed.length === 0 &&
+            negativeMatched.length === 0,
+        };
+      });
+      const verifiedUnits = unitMatches.filter((result) => result.verified);
+      const missing = [
+        ...new Set(unitMatches.flatMap((result) => result.missing)),
+      ];
+      const failed = [
+        ...new Set(unitMatches.flatMap((result) => result.failed)),
+      ];
+      const negativeMatched = [
+        ...new Map(
+          unitMatches
+            .flatMap((result) => result.negativeMatched)
+            .map((signal) => [signal.signalId, signal]),
+        ).values(),
+      ];
+      const positiveSignals = [
+        ...new Set(
+          (verifiedUnits.length > 0 ? verifiedUnits : unitMatches).flatMap(
+            (unitResult) =>
+              unitResult.results
+                .filter((result) => result.matched === true)
+                .map((result) => result.signal.signalId),
+          ),
+        ),
+      ];
+      const verified = verifiedUnits.length > 0;
       candidates.push(
         methodProviderCandidateSchema.parse({
           schemaVersion: 2,
@@ -846,12 +929,10 @@ export class AgenticInstallService {
             methodHash: method.methodHash,
           },
           legacyAdapterBinding: null,
-          packageUnitIds: evidence.packageUnits.map(
-            (unit) => unit.packageUnitId,
-          ),
-          positiveSignals: results
-            .filter((result) => result.matched === true)
-            .map((result) => result.signal.signalId),
+          packageUnitIds: (
+            verified ? verifiedUnits : unitMatches
+          ).map((result) => result.packageUnit.packageUnitId),
+          positiveSignals,
           negativeSignals: [...failed, ...negativeMatched.map((item) => item.signalId)],
           missingEvidence: missing,
           requiresUserChoice: false,
@@ -1178,6 +1259,16 @@ export class AgenticInstallService {
           "Installer entry extension does not match its controlled runtime.",
         );
       }
+      if (
+        installerOperation.terminalMode === "pseudoterminal" &&
+        (context.instance.operatingSystem !== "win32" ||
+          process.platform !== "win32")
+      ) {
+        throw new NexusError(
+          "OPERATION_CAPABILITY_MISSING",
+          "The current controlled pseudoterminal backend requires both a Windows MCP host and a Windows Dynamic Game Context.",
+        );
+      }
       const normalizedWorkingDirectory = normalizeManagedRelativePath(
         installerOperation.workingDirectory,
         context.instance.operatingSystem,
@@ -1241,6 +1332,49 @@ export class AgenticInstallService {
       proposalHash: computeInstallProposalHash(withoutHash),
     });
     return await this.#objects.saveProposal(proposal);
+  }
+
+  async instantiateMethodProposal(input: {
+    methodId: string;
+    methodRevision: number;
+    evidencePackId: string;
+    gameContextId: string;
+    packageUnitId: string;
+  }): Promise<InstallProposal> {
+    const [method, evidence, context, query] = await Promise.all([
+      this.#methods.get(input.methodId, input.methodRevision),
+      this.#objects.getEvidence(input.evidencePackId),
+      this.#objects.getGameContext(input.gameContextId),
+      this.queryMethods({
+        evidencePackId: input.evidencePackId,
+        gameContextId: input.gameContextId,
+      }),
+    ]);
+    const candidate = query.candidates.find(
+      (item) =>
+        item.state === "verified_match" &&
+        item.methodBinding?.methodId === method.methodId &&
+        item.methodBinding.revision === method.revision &&
+        item.methodBinding.methodHash === method.methodHash &&
+        item.packageUnitIds.includes(input.packageUnitId),
+    );
+    if (!candidate) {
+      throw new NexusError(
+        "METHOD_STALE",
+        "The selected learned Method is not a verified match for current Evidence and Context.",
+      );
+    }
+    const draft = instantiateLearnedMethod({
+      method,
+      evidence,
+      context,
+      packageUnitId: input.packageUnitId,
+    });
+    return await this.submitProposal({
+      evidencePackId: input.evidencePackId,
+      gameContextId: input.gameContextId,
+      draft,
+    });
   }
 
   async getProposal(proposalId: string): Promise<InstallProposal> {
@@ -1659,6 +1793,7 @@ export class AgenticInstallService {
         plan: InstallPlanV2;
         bridgePlanId: string;
         applied: ApplyInstallResult;
+        methodLearning: MethodLearningResult;
       }
     | {
         executionKind: "installer";
@@ -1666,6 +1801,7 @@ export class AgenticInstallService {
         bridgePlanId: null;
         record: InstallerInstallationRecord;
         refreshedGameContext: DynamicGameContext | null;
+        methodLearning: MethodLearningResult;
       }
   > {
     const plan = await this.#objects.getPlan(planId);
@@ -1725,12 +1861,23 @@ export class AgenticInstallService {
         liveModRoots: gameRelativeRoots(context, "liveModRoots"),
       });
       await stagingManager.cleanup(execution.stagingId).catch(() => undefined);
+      const methodLearning =
+        record.state === "installed"
+          ? await this.#recordSuccessfulMethod({
+              plan,
+              installationId: record.installationId,
+              transactionId: record.transactionId,
+              staticVerification: record.verification.static,
+              runtimeVerification: "not_run",
+            })
+          : { method: null, outcome: null, warning: null };
       return {
         executionKind: "installer",
         plan,
         bridgePlanId: null,
         record,
         refreshedGameContext,
+        methodLearning,
       };
     }
     const bridge = await this.#objects.getBridge(planId);
@@ -1765,11 +1912,105 @@ export class AgenticInstallService {
         completedAt: new Date().toISOString(),
       });
     }
+    const methodLearning = await this.#recordSuccessfulMethod({
+      plan,
+      installationId: applied.record.installationId,
+      transactionId: applied.transactionId,
+      staticVerification:
+        applied.staticVerification.state === "passed" ? "passed" : "failed",
+      runtimeVerification:
+        applied.record.runtimeVerification === "passed"
+          ? "passed"
+          : applied.record.runtimeVerification === "failed"
+            ? "failed"
+            : "not_run",
+    });
     return {
       executionKind: "file",
       plan,
       bridgePlanId: bridge.v1PlanId,
       applied,
+      methodLearning,
     };
+  }
+
+  async #recordSuccessfulMethod(input: {
+    plan: InstallPlanV2;
+    installationId: string;
+    transactionId: string;
+    staticVerification: "passed" | "failed" | "not_run" | "blocked";
+    runtimeVerification: "passed" | "failed" | "not_run" | "blocked";
+  }): Promise<MethodLearningResult> {
+    try {
+      const [proposal, evidence, context] = await Promise.all([
+        this.#objects.getProposal(input.plan.strategyBinding.proposalId),
+        this.#objects.getEvidence(input.plan.evidenceBinding.evidencePackId),
+        this.#objects.getGameContext(input.plan.gameBinding.gameContextId),
+      ]);
+      let method: InstallationMethod | null = null;
+      if (proposal.strategyBinding.origin === "agent_proposal") {
+        const draft = deriveLearnedMethod({
+          proposal,
+          plan: input.plan,
+          evidence,
+          context,
+          installationId: input.installationId,
+        });
+        await this.#methods.saveDraft(draft);
+        await this.#methods.transition(draft.methodId, "session_approved");
+        method = await this.#methods.transition(
+          draft.methodId,
+          "local_verified",
+        );
+      } else if (proposal.strategyBinding.methodId !== null) {
+        method = await this.#methods.get(
+          proposal.strategyBinding.methodId,
+          proposal.strategyBinding.methodRevision ?? undefined,
+        );
+      }
+      if (method === null) {
+        return {
+          method: null,
+          outcome: null,
+          warning:
+            "The successful legacy compatibility execution did not bind a reusable V2 Method.",
+        };
+      }
+      const withoutHash: Omit<MethodOutcome, "outcomeHash"> = {
+        schemaVersion: 2,
+        outcomeId: randomUUID(),
+        methodId: method.methodId,
+        methodRevision: method.revision,
+        methodHash: method.methodHash,
+        evidencePackId: evidence.evidencePackId,
+        evidencePackHash: evidence.evidencePackHash,
+        gameContextId: context.gameContextId,
+        gameContextHash: context.gameContextHash,
+        installationId: input.installationId,
+        transactionId: input.transactionId,
+        state: "succeeded",
+        verification: {
+          static: input.staticVerification,
+          runtime: input.runtimeVerification,
+        },
+        operationDeviations: [],
+        failureAttribution: null,
+        createdAt: new Date().toISOString(),
+      };
+      const outcome = methodOutcomeSchema.parse({
+        ...withoutHash,
+        outcomeHash: computeMethodOutcomeHash(withoutHash),
+      });
+      await this.#methods.appendOutcome(outcome);
+      return { method, outcome, warning: null };
+    } catch (error) {
+      return {
+        method: null,
+        outcome: null,
+        warning: `Installation committed, but Method learning did not complete: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
   }
 }

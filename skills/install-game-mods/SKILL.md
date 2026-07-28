@@ -27,11 +27,11 @@ Read:
 
 1. Call `list_game_profiles`, then establish a Dynamic Game Context. Use a matching `legacyProfileId`; use explicit identity only for an unregistered game.
 2. Prepare an immutable Evidence Pack for each verified Archive.
-3. Query reusable installation Methods and obey `proposalReadiness.recommendedAction`.
+3. Query reusable installation Methods and obey `proposalReadiness.recommendedAction`. For `select_verified_method`, call `instantiate_install_method` with the exact candidate binding and current package unit; never reconstruct its operations by hand.
 4. Submit a Proposal only when the result permits it. Never invent a package unit. If no Method matches, research only what is needed and submit either a bounded file Proposal or one controlled-installer Proposal according to `recommendedAction`. Do not ask the user to develop an Adapter.
 5. Freeze a Plan and show its source, selected package, exact game root, strategy, target operations, conflicts, risk, reversibility, approval digest, `planId`, and expiry.
 6. Stop for explicit approval of that exact Plan.
-7. Apply with only `planId`. For a file execution, verify the resulting legacy `installationId`; for a controlled installer, inspect its V2 Installation Record, static verification, observed changes, recovery state, and refreshed Game Context.
+7. Apply with only `planId`. For a file execution, verify the resulting legacy `installationId`; for a controlled installer, inspect its V2 Installation Record, static verification, observed changes, recovery state, and refreshed Game Context. Review `methodLearning`: a successful Agent Proposal should return a `local_verified` Method plus a successful Method Outcome; a reused Method should append a new Outcome without creating a Mod-specific duplicate.
 
 For Bundles, process required dependencies in `installOrder`. Freeze and approve one current Plan at a time; do not preapprove later nodes.
 

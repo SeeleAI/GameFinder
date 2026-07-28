@@ -58,7 +58,7 @@ Read `proposalReadiness`, `operationCapabilities`, and `contextAdvisories` befor
 
 - `reprobe_with_legacy_profile`: call `probe_game_context` with the returned `legacyProfileId`, then prepare a new Evidence Pack bound to that Context and query again.
 - `stop_before_proposal`: preserve Evidence and Context, report every blocker and stop. Do not call `submit_install_proposal`.
-- `select_verified_method`: bind the exact verified candidate.
+- `select_verified_method`: call `instantiate_install_method(methodId, methodRevision, evidencePackId, gameContextId, packageUnitId)` with the exact verified candidate and current package unit. Do not rebuild or edit the Method's operations manually.
 - `construct_agent_file_proposal`: research and construct the smallest evidence-backed file Proposal.
 - `construct_agent_installer_proposal`: research the exact non-interactive invocation, smallest declared write roots, timeout, allowed exit codes, and required postconditions for the hashed bundled entry.
 
@@ -82,6 +82,8 @@ Every operation needs an exact source path from the selected package unit and an
 Never invent `packageUnitId`, `packageRoot`, entry hashes, evidence IDs, or installer fields. If Evidence has no selectable package unit, stop according to `proposalReadiness`.
 
 For `run_bundled_installer`, use exactly one installer operation and only the entry path and SHA-256 present in Evidence. Use `native` only for a staged `.exe`, `fixed-script-runner` only for a staged `.js`, and `dotnet` only when authoritative evidence proves that runtime. Keep `environmentPolicy: minimal`, classify risk as `high`, declare only the smallest game-root-relative paths evidenced by real Evidence/Context IDs, and require at least one concrete postcondition. A bounded installer root may be outside the ordinary Mod writable root (for example, one loader executable beside the game), but it can never overlap a protected root. Never put credentials, browser state, or shell syntax in arguments.
+
+Use `terminalMode: redirected_stdio` by default. Select `terminalMode: pseudoterminal` only when authoritative installer behavior or a prior captured failure proves that the program requires a real Windows console even for its non-interactive invocation. Confirm that `operationCapabilities.runBundledInstaller.terminalModes.pseudoterminal.state` is `available`. The current backend is Windows ConPTY, supplies no keystrokes or secrets, and does not make an interactive installer autonomously answerable; if the installer still requires material input, stop and redesign the Proposal rather than scripting guesses.
 
 ## 4. Validate and freeze
 
@@ -114,7 +116,15 @@ apply_agentic_install_plan(planId)
 
 Apply accepts no paths or operations. It revalidates immutable bindings and delegates writes to a lock, process guard, verified staging, backup, side-effect observation, verification, and recovery path.
 
-For `executionKind: file`, call `verify_mod_install(installationId)`. For `executionKind: installer`, use the returned V2 record: success requires `state: installed`, `verification.static: passed`, and an empty `unexpectedChanges` list. A refreshed Dynamic Game Context is returned for registered profiles so the next Bundle node sees newly installed loaders.
+For `executionKind: file`, call `verify_mod_install(installationId)`. For `executionKind: installer`, use the returned V2 record: success requires `state: installed`, `verification.static: passed`, and an empty `unexpectedChanges` list. Report the selected terminal mode; pseudoterminal output is a bounded, sanitized combined terminal stream in `stdout`, while `stderr` is empty because ConPTY does not preserve separate streams. A refreshed Dynamic Game Context is returned for registered profiles so the next Bundle node sees newly installed loaders.
+
+Inspect `methodLearning` after every successful apply:
+
+- a successful `agent_proposal` should create a revisioned Method, promote it through `session_approved` to `local_verified`, and append a successful Method Outcome;
+- a successful `learned_method` reuse should append another Outcome to the same Method revision;
+- a non-null learning warning means the installation committed but reusable knowledge did not persist; report that distinction and do not claim warm-start readiness.
+
+Every warm start still prepares fresh Evidence and Context, re-queries Method scope, calls `instantiate_install_method`, freezes a new Plan, and obtains approval. A learned Method never authorizes direct execution.
 
 ## 6. Stable error behavior
 

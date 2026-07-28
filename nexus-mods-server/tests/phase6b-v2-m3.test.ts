@@ -67,6 +67,14 @@ async function createFixture(): Promise<{
       '  fs.writeFileSync(target, "fixture-smapi");',
       "  process.exit(0);",
       "}",
+      'if (mode === "tty" || mode === "tty-timeout") {',
+      "  if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(9);",
+      "  fs.mkdirSync(target, { recursive: true });",
+      '  fs.writeFileSync(path.join(target, "loader.txt"), "terminal-installed");',
+      '  console.log("\\u001b[32mfixture terminal ready\\u001b[0m");',
+      '  if (mode === "tty-timeout") setInterval(() => {}, 1000);',
+      "  else process.exit(0);",
+      "}",
       "fs.mkdirSync(target, { recursive: true });",
       'fs.writeFileSync(path.join(target, "loader.txt"), "installed");',
       'if (mode === "unexpected") {',
@@ -107,8 +115,15 @@ async function createFixture(): Promise<{
 
 async function prepareInstaller(
   fixture: Awaited<ReturnType<typeof createFixture>>,
-  mode: "success" | "fail" | "unexpected" | "smapi",
+  mode:
+    | "success"
+    | "fail"
+    | "unexpected"
+    | "smapi"
+    | "tty"
+    | "tty-timeout",
   bundleId?: string,
+  contextOperatingSystem: "win32" | "linux" | "darwin" = "win32",
 ) {
   const legacy = await InstallService.create({
     managerRoot: fixture.managerRoot,
@@ -128,7 +143,7 @@ async function prepareInstaller(
           gameId: "example-game",
           gameName: "Example Game",
           nexusDomainName: "examplegame",
-          operatingSystem: "win32",
+          operatingSystem: contextOperatingSystem,
           anchorPaths: ["ExampleGame.exe"],
           writableRoots: ["Mods"],
           liveModRoots: ["Mods"],
@@ -200,7 +215,11 @@ async function prepareInstaller(
           arguments: [target, mode],
           workingDirectory: "Installer",
           environmentPolicy: "minimal",
-          timeoutMs: 10_000,
+          terminalMode:
+            mode === "tty" || mode === "tty-timeout"
+              ? "pseudoterminal"
+              : "redirected_stdio",
+          timeoutMs: mode === "tty-timeout" ? 1_000 : 10_000,
           allowedExitCodes: [0],
           declaredWriteRoots: [
             {
@@ -268,6 +287,18 @@ describe("Phase 6B V2 M3 controlled bundled installer", () => {
       verification: { static: "passed" },
       unexpectedChanges: [],
     });
+    expect(result.methodLearning).toMatchObject({
+      warning: null,
+      method: {
+        state: "local_verified",
+        provenance: { origin: "agent_learned" },
+        confidence: { successfulApplications: 1, failedApplications: 0 },
+      },
+      outcome: {
+        state: "succeeded",
+        verification: { static: "passed", runtime: "not_run" },
+      },
+    });
     expect(await readFile(path.join(target, "loader.txt"), "utf8")).toBe(
       "installed",
     );
@@ -293,6 +324,71 @@ describe("Phase 6B V2 M3 controlled bundled installer", () => {
     );
     expect(await stat(path.join(target, "loader.txt")).catch(() => null)).toBeNull();
   });
+
+  it.skipIf(process.platform !== "win32")(
+    "runs a console-dependent installer through Windows ConPTY and learns that mode",
+    async () => {
+      const fixture = await createFixture();
+      const { service, plan, target } = await prepareInstaller(fixture, "tty");
+      const result = await service.applyPlan(plan.planId);
+      if (result.executionKind !== "installer") {
+        throw new Error("Expected controlled installer execution.");
+      }
+      expect(result.record).toMatchObject({
+        state: "installed",
+        process: {
+          terminalMode: "pseudoterminal",
+          exitCode: 0,
+          timedOut: false,
+          stdout: expect.stringContaining("fixture terminal ready"),
+          stderr: "",
+        },
+        verification: { static: "passed" },
+        unexpectedChanges: [],
+      });
+      expect(result.record.process.stdout).not.toContain("\u001b");
+      expect(await readFile(path.join(target, "loader.txt"), "utf8")).toBe(
+        "terminal-installed",
+      );
+      expect(result.methodLearning.method?.operationTemplates[0]).toMatchObject({
+        kind: "run_bundled_installer",
+        terminalMode: "pseudoterminal",
+      });
+    },
+  );
+
+  it("rejects pseudoterminal mode when the Dynamic Game Context is not Windows", async () => {
+    const fixture = await createFixture();
+    await expect(
+      prepareInstaller(fixture, "tty", undefined, "linux"),
+    ).rejects.toMatchObject({
+      code: "OPERATION_CAPABILITY_MISSING",
+    });
+  });
+
+  it.skipIf(process.platform !== "win32")(
+    "terminates a timed-out ConPTY process tree and restores declared roots",
+    async () => {
+      const fixture = await createFixture();
+      const { service, plan, target } = await prepareInstaller(
+        fixture,
+        "tty-timeout",
+      );
+      const result = await service.applyPlan(plan.planId);
+      if (result.executionKind !== "installer") {
+        throw new Error("Expected controlled installer execution.");
+      }
+      expect(result.record).toMatchObject({
+        state: "rolled_back",
+        process: {
+          terminalMode: "pseudoterminal",
+          timedOut: true,
+        },
+        recovery: { attempted: true, completed: true },
+      });
+      expect(await stat(target).catch(() => null)).toBeNull();
+    },
+  );
 
   it("marks recovery_required when an installer writes outside declared roots", async () => {
     const fixture = await createFixture();
@@ -398,5 +494,85 @@ describe("Phase 6B V2 M3 controlled bundled installer", () => {
     expect(await service.getSatisfiedBundleNodeIds(bundleId)).toEqual([
       "loader-runtime",
     ]);
+  });
+
+  it("reuses a learned installer Method from a fresh service instance", async () => {
+    const fixture = await createFixture();
+    const cold = await prepareInstaller(fixture, "success");
+    const installed = await cold.service.applyPlan(cold.plan.planId);
+    if (installed.executionKind !== "installer") {
+      throw new Error("Expected controlled installer execution.");
+    }
+    const learned = installed.methodLearning.method;
+    if (!learned) throw new Error("Expected a learned installer Method.");
+
+    const legacy = await InstallService.create({
+      managerRoot: fixture.managerRoot,
+    });
+    const warm = await AgenticInstallService.create({
+      managerRoot: fixture.managerRoot,
+      legacy,
+    });
+    const context = await warm.probeGameContext({
+      gameRoot: fixture.gameRoot,
+      gameId: "example-game",
+      gameName: "Example Game",
+      nexusDomainName: "examplegame",
+      operatingSystem: "win32",
+      anchorPaths: ["ExampleGame.exe"],
+      writableRoots: ["Mods"],
+      liveModRoots: ["Mods"],
+      lockSensitiveProcessNames: [],
+    });
+    const evidence = await warm.prepareEvidence({
+      archivePath: fixture.archivePath,
+      receiptPath: fixture.receiptPath,
+      gameContextId: context.gameContextId,
+    });
+    const unit = evidence.packageUnits[0];
+    if (!unit) throw new Error("Expected an executable installer package unit.");
+
+    const queried = await warm.queryMethods({
+      evidencePackId: evidence.evidencePackId,
+      gameContextId: context.gameContextId,
+    });
+    expect(queried.proposalReadiness.recommendedAction).toBe(
+      "select_verified_method",
+    );
+    expect(queried.candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          state: "verified_match",
+          methodBinding: {
+            methodId: learned.methodId,
+            revision: learned.revision,
+            methodHash: learned.methodHash,
+          },
+        }),
+      ]),
+    );
+
+    const proposal = await warm.instantiateMethodProposal({
+      methodId: learned.methodId,
+      methodRevision: learned.revision,
+      evidencePackId: evidence.evidencePackId,
+      gameContextId: context.gameContextId,
+      packageUnitId: unit.packageUnitId,
+    });
+    expect(proposal.strategyBinding).toEqual({
+      origin: "learned_method",
+      methodId: learned.methodId,
+      methodRevision: learned.revision,
+      methodHash: learned.methodHash,
+      legacyAdapterBinding: null,
+    });
+    expect(proposal.operations[0]).toMatchObject({
+      kind: "run_bundled_installer",
+      arguments: [path.join(fixture.gameRoot, "Mods", "Loader"), "success"],
+      entry: {
+        relativePath: "Installer/setup.js",
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
   });
 });

@@ -34,13 +34,16 @@ Report:
 - installed targets;
 - static verification result;
 - runtime verification result;
+- learned Method ID/revision and Method Outcome ID, or the exact learning warning;
 - warnings.
 
 When runtime verification is `not-run`, say: “文件已安装并通过静态验证，但尚未证明游戏内成功加载。”
 
 ## Successful controlled-installer apply
 
-Accept success only when `executionKind` is `installer`, the V2 record state is `installed`, static verification passed, and `unexpectedChanges` is empty. Report the installer entry identity and hash, declared roots, observed changes, process exit result, recovery status, Installation/transaction IDs, and refreshed Game Context ID when present.
+Accept success only when `executionKind` is `installer`, the V2 record state is `installed`, static verification passed, and `unexpectedChanges` is empty. Report the installer entry identity and hash, terminal mode, declared roots, observed changes, process exit result, recovery status, Installation/transaction IDs, and refreshed Game Context ID when present. In `pseudoterminal` mode, treat `stdout` as the sanitized combined console transcript and expect `stderr` to be empty.
+
+Also report the learned Method ID/revision and Method Outcome ID. If Method learning failed after the installation committed, preserve the successful installation result but explicitly state that future sessions cannot yet rely on warm-start reuse.
 
 Do not pass a controlled-installer V2 record to the legacy `verify_mod_install` tool. Do not claim in-game success until a later runtime check proves it.
 

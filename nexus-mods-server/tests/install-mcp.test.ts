@@ -182,6 +182,7 @@ describe("Phase 6B-4 installation MCP", () => {
         "prepare_install_evidence",
         "get_install_evidence",
         "query_install_methods",
+        "instantiate_install_method",
         "submit_install_proposal",
         "get_install_proposal",
         "freeze_install_plan",

@@ -310,6 +310,62 @@ describe("analyzePackageInventory", () => {
     expect(analysis.ambiguities).toEqual([]);
   });
 
+  it("recognizes a real-world SMAPI manifest with a UTF-8 BOM", async () => {
+    const directory = await makeTemporaryDirectory();
+    const archivePath = path.join(directory, "SkipFishingMinigameDotnet5.zip");
+    await writeZip(archivePath, [
+      {
+        path: "SkipFishingMinigameDotnet5/manifest.json",
+        content:
+          "\uFEFF" +
+          JSON.stringify({
+            Name: "SkipFishingMinigame",
+            Author: "DewMods",
+            Version: "0.7.4",
+            Description:
+              "When a fish bites, just hook the fish and skip the bobber bar minigame",
+            UniqueID:
+              "DewMods.StardewValleyMods.SkipFishingMinigame",
+            EntryDll: "SkipFishingMinigame.dll",
+            UpdateKeys: ["Nexus:2697"],
+          }),
+      },
+      {
+        path: "SkipFishingMinigameDotnet5/SkipFishingMinigame.dll",
+        content: "test-dll",
+      },
+    ]);
+    const archiveInfo = await stat(archivePath);
+    const inventory = await inspectZipArchive({
+      archive: {
+        absolutePath: archivePath,
+        fileName: path.basename(archivePath),
+        bytes: archiveInfo.size,
+        sha256: await sha256File(archivePath),
+      },
+    });
+
+    const analysis = await analyzePackageInventory(inventory);
+
+    expect(analysis.analyzerVersion).toBe("package-analyzer@3");
+    expect(analysis.packages).toEqual([
+      expect.objectContaining({
+        packageType: "loader-plugin",
+        packageRoot: "SkipFishingMinigameDotnet5",
+        identity: {
+          uniqueId: "DewMods.StardewValleyMods.SkipFishingMinigame",
+          name: "SkipFishingMinigame",
+          version: "0.7.4",
+        },
+        entryFiles: [
+          "SkipFishingMinigameDotnet5/manifest.json",
+          "SkipFishingMinigameDotnet5/SkipFishingMinigame.dll",
+        ],
+      }),
+    ]);
+    expect(analysis.ambiguities).toEqual([]);
+  });
+
   it("reports a missing declared entry DLL instead of guessing", async () => {
     const directory = await makeTemporaryDirectory();
     const archivePath = path.join(directory, "broken.zip");

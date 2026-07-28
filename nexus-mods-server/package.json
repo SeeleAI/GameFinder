@@ -40,6 +40,9 @@
     "yauzl": "^3.4.0",
     "zod": "4.4.3"
   },
+  "optionalDependencies": {
+    "node-pty": "1.1.0"
+  },
   "devDependencies": {
     "@types/node": "24.10.4",
     "@types/yauzl": "^3.4.0",

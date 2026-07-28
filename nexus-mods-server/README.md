@@ -237,9 +237,11 @@ Contract V2 can plan a bounded file-type Mod installation even when the game has
 6. After explicit approval, call `apply_agentic_install_plan` with only that `planId`.
 7. Call `verify_mod_install` with the resulting `installationId`.
 
-The M2 executor supports a selected package tree installed under a declared writable root. It rejects protected paths, stale hashes, unresolved choices, unsupported ownership, and mutable apply arguments. Writes reuse the existing process guard, instance lock, backup, transaction journal, static verification, and rollback engine.
+The file executor supports a selected package tree installed under a declared writable root. The controlled-installer executor supports one Evidence-bound `run_bundled_installer` operation with a fixed runtime, arguments, minimal environment, timeout, declared write roots, static postconditions, side-effect observation, durable journal, and bounded recovery. Both paths reject protected paths, stale hashes, unresolved choices, unsupported ownership, and mutable apply arguments.
 
-`run_bundled_installer` is part of Contract V2 but is not executable until M3 adds bounded process execution, side-effect observation, and the full dependency/loader orchestration loop. `query_install_methods` reports that stable capability state as `OPERATION_CAPABILITY_MISSING`. If Evidence has no package unit, stop before Proposal instead of inventing selection or entry data. This does not require a game- or Mod-specific Adapter.
+Controlled installers default to `terminalMode: redirected_stdio`. On Windows, an installer that demonstrably requires a real console can use `terminalMode: pseudoterminal`, backed by ConPTY through the optional `node-pty` dependency. This mode does not send input and does not automate interactive choices; it only supplies console semantics and captures a bounded, sanitized combined terminal transcript. Check `query_install_methods.operationCapabilities` before proposing it. If Evidence has no package unit, stop before Proposal instead of inventing selection or entry data. No game- or Mod-specific Adapter is required.
+
+For a source checkout, install dependencies with `pnpm install`. `pnpm-workspace.yaml` explicitly permits the `node-pty` native package build/install step. The published `node-pty` Windows x64 package includes prebuilt ConPTY components, so a local C++ compiler is not normally required. Pseudoterminal mode requires a Windows MCP host with ConPTY support; other hosts continue to support redirected stdio and report the pseudoterminal capability as unavailable.
 
 ## Browser configuration
 

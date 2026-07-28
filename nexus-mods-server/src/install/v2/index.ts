@@ -6,3 +6,4 @@ export * from "./controlled-installer-engine.js";
 export * from "./controlled-installer-journal-store.js";
 export * from "./legacy-compatibility-provider.js";
 export * from "./method-store.js";
+export * from "./method-learning.js";

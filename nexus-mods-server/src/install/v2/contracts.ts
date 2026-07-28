@@ -280,6 +280,9 @@ const methodInstallerOperationTemplateSchema = z.object({
   kind: z.literal("run_bundled_installer"),
   entryTemplate: z.string().trim().min(1).max(1_024),
   runtime: z.enum(["native", "dotnet", "fixed-script-runner"]),
+  terminalMode: z
+    .enum(["redirected_stdio", "pseudoterminal"])
+    .optional(),
   argumentTemplates: z.array(z.string().max(2_000)).max(100),
   workingDirectoryTemplate: z.string().trim().min(1).max(1_024),
   declaredWriteRootTemplates: z
@@ -398,6 +401,9 @@ export const bundledInstallerOperationSchema = z.object({
     runtime: z.enum(["native", "dotnet", "fixed-script-runner"]),
     sha256,
   }),
+  terminalMode: z
+    .enum(["redirected_stdio", "pseudoterminal"])
+    .optional(),
   arguments: z.array(z.string().max(2_000)).max(100),
   workingDirectory: relativePath,
   environmentPolicy: z.literal("minimal"),
@@ -586,6 +592,9 @@ export const installerInstallationRecordSchema = z.object({
   ]),
   process: z.object({
     runtime: z.enum(["native", "dotnet", "fixed-script-runner"]),
+    terminalMode: z
+      .enum(["redirected_stdio", "pseudoterminal"])
+      .optional(),
     entryRelativePath: relativePath,
     entrySha256: sha256,
     arguments: z.array(z.string().max(2_000)).max(100),

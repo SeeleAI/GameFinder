@@ -179,7 +179,7 @@ export function createNexusMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. File-tree and controlled bundled-installer Proposals both require submit_install_proposal, freeze_install_plan, exact plan review, explicit approval, and apply_agentic_install_plan(planId). V2 may use a verified learned Method, a legacy Adapter candidate, or a bounded Agent proposal; lack of a prewritten Adapter is not itself a blocker. Never replace MCP installation tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact plan review, explicit approval, and apply_agentic_install_plan(planId). Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and approval. Never replace MCP installation tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall."
     }
   );
 
@@ -1149,7 +1149,7 @@ export function createNexusMcpServer(
     {
       title: "Query reusable installation methods",
       description:
-        "Evaluate current Evidence and Dynamic Game Context against verified Method Store entries and legacy Adapter compatibility providers. Also returns M3 operation capabilities, package-unit Proposal readiness, and registered-profile advisories. Follow recommendedAction and never invent a package unit.",
+        "Evaluate current Evidence and Dynamic Game Context against verified Method Store entries and legacy Adapter compatibility providers. Also returns operation and terminal-mode capabilities, package-unit Proposal readiness, and registered-profile advisories. Follow recommendedAction and never invent a package unit.",
       inputSchema: {
         evidencePackId: z.string().uuid(),
         gameContextId: z.string().uuid()
@@ -1195,11 +1195,61 @@ export function createNexusMcpServer(
   );
 
   server.registerTool(
+    "instantiate_install_method",
+    {
+      title: "Instantiate one verified learned installation Method",
+      description:
+        "Resolve one exact local_verified or promoted Method against current Evidence, Dynamic Game Context, and package unit, then persist the resulting immutable Proposal. Does not modify the game.",
+      inputSchema: {
+        methodId: z.string().uuid(),
+        methodRevision: z.number().int().positive(),
+        evidencePackId: z.string().uuid(),
+        gameContextId: z.string().uuid(),
+        packageUnitId: z.string().min(1).max(200)
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({
+      methodId,
+      methodRevision,
+      evidencePackId,
+      gameContextId,
+      packageUnitId
+    }) =>
+      safe(async () => {
+        const proposal = await (
+          await agenticInstalls()
+        ).instantiateMethodProposal({
+          methodId,
+          methodRevision,
+          evidencePackId,
+          gameContextId,
+          packageUnitId
+        });
+        return ok(
+          `Instantiated learned Method ${methodId} revision ${methodRevision} as Proposal ${proposal.proposalId}.`,
+          {
+            ok: true,
+            proposal,
+            meta: meta("local", null, [
+              "The game directory is unchanged; freeze and review the Proposal as a new Plan."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
     "submit_install_proposal",
     {
       title: "Submit a bounded Agent installation Proposal",
       description:
-        "Validate and persist an immutable Contract V2 Proposal bound to exact Evidence and Game Context hashes. M3 supports bounded install_tree or one controlled run_bundled_installer operation.",
+        "Validate and persist an immutable Contract V2 Proposal bound to exact Evidence and Game Context hashes. Supports bounded install_tree or one controlled run_bundled_installer operation; redirected stdio is the default and Windows ConPTY must be explicitly selected and available.",
       inputSchema: {
         evidencePackId: z.string().uuid(),
         gameContextId: z.string().uuid(),
@@ -1340,6 +1390,7 @@ export function createNexusMcpServer(
               planId,
               executionKind: result.executionKind,
               installation: result.record,
+              methodLearning: result.methodLearning,
               refreshedGameContext: result.refreshedGameContext,
               meta: meta("local", null, [
                 result.record.verification.static === "passed"
@@ -1370,6 +1421,7 @@ export function createNexusMcpServer(
               staticVerification: applied.staticVerification,
               runtimeVerification: applied.record.runtimeVerification
             },
+            methodLearning: result.methodLearning,
             meta: meta("local", null, [
               "Static verification passed; runtime verification has not run."
             ])

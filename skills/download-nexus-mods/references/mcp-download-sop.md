@@ -31,11 +31,11 @@ Before `prepare_download`:
 1. Resolve the dependency graph when local satisfaction or graph explanation is needed.
 2. For each potentially installed Nexus dependency, call `find_installed_nexus_mod(modUrl, gameRoot, versionConstraint?)`; never guess a record UUID.
 3. Accept a file-transaction dependency only when `canMarkSatisfiedNode=true`. For a controlled-installer Loader candidate, call `probe_game_context` on the same game root and require current Loader detection before accepting it.
-4. Call `plan_mod_download(modUrl, rootFileId?, dependencyFileOverrides?, satisfiedNodeIds?)`.
+4. Call `plan_mod_download(modUrl, rootFileId?, dependencyFileOverrides?, satisfiedNodeIds?, authorizationScope)`. Use `root_and_required_dependencies` only when the user's explicit request authorizes installation or inclusion of routine prerequisites; otherwise use `root_only`.
 5. Stop on a blocked Plan, dependency cycle, depth limit, unavailable required node, uncanonicalized dependency, unknown required version, or incomplete current-state proof.
-6. Display the root and every dependency file selection, satisfied-node evidence, plus manual requirements.
-7. Obtain explicit approval of the returned `downloadPlanId`.
-8. Download each item whose action is `download`, in the Plan order.
+6. Read the MCP `review.classification` (`auto_safe`, `review_required`, or `blocked`) and its reasons. Do not downgrade it in the Skill.
+7. For `auto_safe`, continue in the same turn. For `review_required`, display the root and every dependency file selection, satisfied-node evidence, and manual requirements, then obtain explicit approval of the returned `downloadPlanId`.
+8. Download each authorized item whose action is `download`, in the Plan order.
 9. After all receipts exist, call `create_mod_bundle`.
 
 Use `resolve_mod_dependencies` separately only when the graph needs explanation before file selection. Do not treat raw `get_mod_requirements` output as a complete download plan.
@@ -68,7 +68,7 @@ The MCP server keeps `native` as its compatibility default. Use `native` only wh
 
 ## Persistent Chromium sequence
 
-For each approved Download Plan item, call:
+For each explicitly approved or `auto_safe` Download Plan item, call:
 
    ```text
    prepare_download(modUrl, fileId?, backend="persistent_chromium")
@@ -138,7 +138,7 @@ Retry one transient technical failure only when `retryable=true` and the retry d
 ## Completion checklist
 
 - Explicit download intent was present.
-- A dependency-aware Download Plan was reviewed.
+- A dependency-aware Download Plan was frozen and classified; explicit review occurred when its class required it.
 - Canonical Mod and file identity match.
 - Output directory is absolute and safe.
 - Terminal state is `completed`.

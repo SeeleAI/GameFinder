@@ -4,7 +4,10 @@ import { z } from "zod/v4";
 import type { NexusBrowserAutomation } from "./browser/browser-service.js";
 import { NexusBrowserService } from "./browser/browser-service.js";
 import { BrowserDownloadManager } from "./browser-download-manager.js";
-import { DownloadBundleService } from "./download-bundle-service.js";
+import {
+  classifyDownloadPlanReview,
+  DownloadBundleService
+} from "./download-bundle-service.js";
 import { DownloadManager, selectDownloadFile } from "./download-manager.js";
 import { asNexusError, NexusError } from "./errors.js";
 import {
@@ -685,6 +688,10 @@ export function createNexusMcpServer(
           .max(100)
           .optional()
           .describe("Dependencies independently proven present; never use this to guess satisfaction."),
+        authorizationScope: z
+          .enum(["root_only", "root_and_required_dependencies"])
+          .default("root_only")
+          .describe("Use root_and_required_dependencies only when the user's explicit request authorizes routine required prerequisites."),
         maxDepth: z.number().int().min(0).max(10).default(5)
       },
       annotations: {
@@ -699,6 +706,7 @@ export function createNexusMcpServer(
       rootFileId,
       dependencyFileOverrides,
       satisfiedNodeIds,
+      authorizationScope,
       maxDepth
     }) =>
       safe(async () => {
@@ -712,13 +720,19 @@ export function createNexusMcpServer(
           ...(satisfiedNodeIds === undefined ? {} : { satisfiedNodeIds }),
           maxDepth
         });
+        const review = classifyDownloadPlanReview(plan, authorizationScope);
         return ok(
-          `Created ${plan.status} Download Plan ${plan.planId} with ${plan.items.filter((item) => item.action === "download").length} file downloads, ${plan.items.filter((item) => item.action === "satisfied").length} satisfied dependencies, and ${plan.manualRequirements.length} manual requirements.`,
+          `Created ${plan.status} Download Plan ${plan.planId} with ${plan.items.filter((item) => item.action === "download").length} file downloads, ${plan.items.filter((item) => item.action === "satisfied").length} satisfied dependencies, and ${plan.manualRequirements.length} manual requirements; review class is ${review.classification}.`,
           {
             ok: true,
             downloadPlan: plan,
+            review,
             meta: meta("local", client.lastQuota, [
-              "Review every dependency and selected file before starting any download.",
+              review.classification === "auto_safe"
+                ? "The exact frozen Plan may continue without a separate approval turn."
+                : review.classification === "review_required"
+                  ? "Display the exact frozen Plan and obtain approval before downloading."
+                  : "Do not download; structural validation failed.",
               "Requirement notes are preserved as evidence and are not silently treated as machine-verified semantic version constraints."
             ])
           }
@@ -1399,7 +1413,7 @@ export function createNexusMcpServer(
     {
       title: "Submit a bounded Agent installation Proposal",
       description:
-        "Validate and persist an immutable Contract V2 Proposal bound to exact Evidence and Game Context hashes. Supports bounded install_tree or one controlled run_bundled_installer operation; redirected stdio is the default and Windows ConPTY must be explicitly selected and available.",
+        "Validate and persist an immutable Contract V2 Proposal bound to exact Evidence and Game Context hashes. Supports bounded install_tree, evidence-backed ensure_directory/install_new_file/replace_file mappings, or one controlled run_bundled_installer operation; redirected stdio is the default and Windows ConPTY must be explicitly selected and available.",
       inputSchema: {
         evidencePackId: z.string().uuid(),
         gameContextId: z.string().uuid(),

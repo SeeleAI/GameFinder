@@ -35,11 +35,18 @@ dependency_file_overrides: [] # optional exact choices
 satisfied_node_ids: [] # only independently proven local dependencies
 output_directory: C:\absolute\path
 backend: persistent_chromium
+authorization_scope: root_only | root_and_required_dependencies
 ```
 
-Call `resolve_mod_dependencies` when the graph needs explanation. Before passing any local dependency in `satisfiedNodeIds`, call `find_installed_nexus_mod` with its canonical Mod URL, exact target game root, and an explicit machine-readable version constraint when one exists; follow the returned current-verification guidance. Then call `plan_mod_download`. Treat the returned graph and file selections as authoritative.
+Use `authorization_scope=root_and_required_dependencies` only when the user explicitly requests installation or inclusion of prerequisites; otherwise use `root_only`. Call `resolve_mod_dependencies` when the graph needs explanation. Before passing any local dependency in `satisfiedNodeIds`, call `find_installed_nexus_mod` with its canonical Mod URL, exact target game root, and an explicit machine-readable version constraint when one exists; follow the returned current-verification guidance. Then call `plan_mod_download` with the authorization scope. Treat the returned graph, file selections, and `review.classification` as authoritative.
 
-Show:
+Follow the MCP review classification:
+
+- `auto_safe`: continue without a separate approval turn when the root file is an unambiguous active MAIN selection, the Plan has no blockers or material choices, and it adds no unexpected files. A combined explicit download-and-install request may also auto-authorize routine required Nexus dependencies when every dependency is an unambiguous active MAIN file.
+- `review_required`: stop for approval when the Plan introduces a material file/dependency choice, files beyond the user's authorized scope, archived/non-MAIN material, manual requirements, or meaningful uncertainty.
+- `blocked`: stop when MCP reports a blocked, cyclic, truncated, unavailable, or unverifiable Plan.
+
+For `review_required`, show:
 
 - Root Mod/file.
 - Every required Nexus Mod and Loader Runtime.
@@ -49,13 +56,13 @@ Show:
 - Cycles, depth limits, unavailable nodes, blockers, and evidence gaps.
 - `downloadPlanId` and expiry.
 
-Stop for explicit approval before starting downloads. A request to download the root Mod does not silently authorize additional files whose identities were not yet shown. Never guess Installation Record UUIDs or mark a dependency satisfied from its name alone. A `file_transaction` match may satisfy a node only when `canMarkSatisfiedNode=true`. A `controlled_installer` match remains a candidate until a fresh probe of the same game root detects the expected loader/runtime.
+Do not confuse Plan validation with human approval: every run still freezes and verifies a Download Plan, but an `auto_safe` Plan proceeds in the same turn. Never guess Installation Record UUIDs or mark a dependency satisfied from its name alone. A `file_transaction` match may satisfy a node only when `canMarkSatisfiedNode=true`. A `controlled_installer` match remains a candidate until a fresh probe of the same game root detects the expected loader/runtime.
 
 If the user explicitly insists on root-only download after seeing required dependencies, download only the root and report that the result is not an installation-ready Bundle.
 
-## Download the approved files
+## Download the authorized files
 
-For each approved Download Plan item whose action is `download`, in dependency-first order:
+For each explicitly approved or `auto_safe` Download Plan item whose action is `download`, in dependency-first order:
 
 1. Call `prepare_download` with its exact canonical `modUrl`, frozen `fileId`, and `backend="persistent_chromium"`.
 2. Verify the prepared Mod/file matches the Plan.

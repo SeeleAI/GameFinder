@@ -138,6 +138,11 @@ export async function inspectInstallationState(input: {
     let state: CurrentStateInspection["paths"][number]["state"];
     if (owner && owner.installationId !== input.record.installationId) {
       state = "replaced_by_managed_layer";
+    } else if (
+      outcome.operationKind === "ensure_directory" &&
+      actualState.kind === "directory"
+    ) {
+      state = "unchanged";
     } else if (outcome.postState.kind === "directory") {
       state = await classifyTreeOutcome(
         outcome,

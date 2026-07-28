@@ -56,6 +56,16 @@ export interface DownloadPlan {
   warnings: string[];
 }
 
+export type DownloadAuthorizationScope =
+  | "root_only"
+  | "root_and_required_dependencies";
+
+export interface DownloadPlanReview {
+  classification: "auto_safe" | "review_required" | "blocked";
+  authorizationScope: DownloadAuthorizationScope;
+  reasons: string[];
+}
+
 export interface BundleArchive {
   nodeId: string;
   role: DependencyNode["role"];
@@ -98,6 +108,60 @@ interface DownloadPlanDraft {
   manualRequirements: DependencyNode[];
   blockers: string[];
   warnings: string[];
+}
+
+export function classifyDownloadPlanReview(
+  plan: DownloadPlan,
+  authorizationScope: DownloadAuthorizationScope,
+): DownloadPlanReview {
+  if (plan.status === "blocked" || plan.blockers.length > 0) {
+    return {
+      classification: "blocked",
+      authorizationScope,
+      reasons:
+        plan.blockers.length > 0
+          ? [...plan.blockers]
+          : ["The frozen Download Plan is blocked."],
+    };
+  }
+  const reasons: string[] = [];
+  const downloads = plan.items.filter((item) => item.action === "download");
+  const dependencyDownloads = downloads.filter((item) => item.role !== "root");
+  if (downloads.filter((item) => item.role === "root").length !== 1) {
+    reasons.push(
+      "The Plan does not contain exactly one downloadable root Mod file.",
+    );
+  }
+  if (
+    authorizationScope === "root_only" &&
+    dependencyDownloads.length > 0
+  ) {
+    reasons.push(
+      "The Plan downloads required dependency files outside root-only authorization.",
+    );
+  }
+  if (
+    dependencyDownloads.some((item) => item.versionConstraint !== null)
+  ) {
+    reasons.push(
+      "At least one downloaded dependency carries a version note that must be reviewed.",
+    );
+  }
+  if (plan.manualRequirements.length > 0) {
+    reasons.push("The Plan contains manual, external, or DLC requirements.");
+  }
+  if (plan.warnings.length > 0) {
+    reasons.push("The dependency resolver returned warnings requiring review.");
+  }
+  if (downloads.length > 10) {
+    reasons.push("The Plan downloads an unusually large number of files.");
+  }
+  return {
+    classification:
+      reasons.length === 0 ? "auto_safe" : "review_required",
+    authorizationScope,
+    reasons,
+  };
 }
 
 function planHashPayload(plan: DownloadPlan): Omit<DownloadPlan, "planHash"> {

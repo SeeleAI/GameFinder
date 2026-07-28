@@ -140,10 +140,10 @@ export function deriveLearnedMethod(input: {
     input.proposal.selection.packageUnitId,
   );
   const operation = input.plan.operations[0];
-  if (!operation || input.plan.operations.length !== 1) {
+  if (!operation) {
     throw new NexusError(
       "INSTALL_CONTRACT_INVALID",
-      "M4 learning requires one bounded operation.",
+      "M4 learning requires at least one bounded operation.",
     );
   }
   const now = new Date().toISOString();
@@ -170,7 +170,10 @@ export function deriveLearnedMethod(input: {
   };
 
   let withoutHash: Omit<InstallationMethod, "methodHash">;
-  if (operation.kind === "run_bundled_installer") {
+  if (
+    operation.kind === "run_bundled_installer" &&
+    input.plan.operations.length === 1
+  ) {
     const entryBasename = path.posix.basename(operation.entry.relativePath);
     const argumentTemplates = operation.arguments.map((argument) =>
       replaceLiteral(
@@ -264,12 +267,20 @@ export function deriveLearnedMethod(input: {
         lastVerifiedAt: now,
       },
     };
-  } else if (operation.kind === "install_tree") {
+  } else if (
+    operation.kind === "install_tree" &&
+    input.plan.operations.length === 1
+  ) {
     const targetTemplate = methodTargetTemplate(
       operation.targetRelativePath,
       unit,
     );
     const manifestSubject = `${targetTemplate}/manifest.json`;
+    const portableEntryName =
+      unit.identity.uniqueId?.startsWith("portable-tool:") &&
+      unit.entryFiles.length === 1
+        ? path.posix.basename(unit.entryFiles[0]!)
+        : null;
     withoutHash = {
       schemaVersion: 2,
       methodId: randomUUID(),
@@ -302,6 +313,18 @@ export function deriveLearnedMethod(input: {
             expected: unit.packageType,
             required: true,
           },
+          ...(portableEntryName === null
+            ? []
+            : [
+                {
+                  signalId: "portable-entry-name",
+                  kind: "file_name" as const,
+                  subject: "entryFile",
+                  operator: "contains" as const,
+                  expected: portableEntryName,
+                  required: true,
+                },
+              ]),
         ],
       },
       resolution: {
@@ -360,7 +383,172 @@ export function deriveLearnedMethod(input: {
         deterministicSignals: [
           "game-identity",
           `package-${unit.packageType}`,
+          ...(portableEntryName === null ? [] : ["portable-entry-name"]),
           ...(loader === undefined ? [] : [`loader-${loader.loaderId}`]),
+        ],
+        successfulApplications: 1,
+        failedApplications: 0,
+        lastVerifiedAt: now,
+      },
+    };
+  } else if (
+    input.plan.operations.every((candidate) =>
+      [
+        "ensure_directory",
+        "install_new_file",
+        "replace_file",
+      ].includes(candidate.kind),
+    )
+  ) {
+    const nexusIdentity = input.evidence.source.nexus
+      ? `${input.evidence.source.nexus.domainName}:${input.evidence.source.nexus.modId}`
+      : null;
+    const fileOperations = input.plan.operations.filter(
+      (
+        candidate,
+      ): candidate is Extract<
+        (typeof input.plan.operations)[number],
+        {
+          kind:
+            | "ensure_directory"
+            | "install_new_file"
+            | "replace_file";
+        }
+      > =>
+        candidate.kind === "ensure_directory" ||
+        candidate.kind === "install_new_file" ||
+        candidate.kind === "replace_file",
+    );
+    const operationTemplates = fileOperations.map((candidate, index) => ({
+      templateId: `mapped-file-${index + 1}`,
+      kind: candidate.kind,
+      sourceTemplate:
+        candidate.kind === "ensure_directory"
+          ? null
+          : candidate.sourceRelativePath,
+      targetTemplate: candidate.targetRelativePath,
+      ownershipMode:
+        candidate.kind === "ensure_directory"
+          ? null
+          : candidate.kind === "install_new_file"
+            ? ("installed_file_set" as const)
+            : ("layered_path" as const),
+    }));
+    const targetMappings = fileOperations
+      .filter(
+        (
+          candidate,
+        ): candidate is Extract<
+          (typeof fileOperations)[number],
+          { kind: "install_new_file" | "replace_file" }
+        > => candidate.kind !== "ensure_directory",
+      )
+      .map((candidate, index) => ({
+        mappingId: `mapped-source-${index + 1}`,
+        sourceTemplate: candidate.sourceRelativePath,
+        targetTemplate: candidate.targetRelativePath,
+      }));
+    const operationKinds = [
+      ...new Set(fileOperations.map((candidate) => candidate.kind)),
+    ];
+    withoutHash = {
+      schemaVersion: 2,
+      methodId: randomUUID(),
+      revision: 1,
+      state: "draft",
+      createdAt: now,
+      updatedAt: now,
+      name: `${unit.identity.name ?? "root-overlay"} bounded file mapping`,
+      scope: {
+        ...commonScope,
+        loaderSelectors: [],
+        sourceSelectors:
+          nexusIdentity === null
+            ? []
+            : [
+                {
+                  signalId: "nexus-source-identity",
+                  kind: "source_identity",
+                  subject: "nexusMod",
+                  operator: "equals",
+                  expected: nexusIdentity,
+                  required: true,
+                },
+              ],
+        packageSignals: [
+          {
+            signalId: `package-${unit.packageType}`,
+            kind: "package_type",
+            subject: "packageType",
+            operator: "equals",
+            expected: unit.packageType,
+            required: true,
+          },
+          ...fileOperations
+            .filter(
+              (
+                candidate,
+              ): candidate is Extract<
+                (typeof fileOperations)[number],
+                { kind: "install_new_file" | "replace_file" }
+              > => candidate.kind !== "ensure_directory",
+            )
+            .map((candidate, index) => ({
+              signalId: `mapped-source-${index + 1}`,
+              kind: "path_exists" as const,
+              subject: "archiveEntry",
+              operator: "equals" as const,
+              expected: candidate.sourceRelativePath,
+              required: true,
+            })),
+        ],
+      },
+      resolution: {
+        packageRootRules: ["Use the exact analyzed root-overlay package root."],
+        componentSelectionRules: [],
+        targetMappings,
+      },
+      operationTemplates,
+      preconditions: input.proposal.preconditions,
+      verificationTemplate: {
+        staticChecks:
+          input.proposal.verificationRequirements.length > 0
+            ? input.proposal.verificationRequirements
+            : fileOperations
+                .filter((candidate) => candidate.kind !== "ensure_directory")
+                .map((candidate, index) => ({
+                  checkId: `mapped-target-${index + 1}`,
+                  kind: "path_exists" as const,
+                  subject: candidate.targetRelativePath,
+                  expected: null,
+                  required: true,
+                  evidenceIds: evidenceRefs,
+                })),
+        runtimeChecks: [],
+        dependentMinimumLevel: "static_verified",
+      },
+      reversibilityRequirements: operationKinds.map((kind) => ({
+        operationKind: kind,
+        level: "full" as const,
+        requirement:
+          kind === "replace_file"
+            ? "Preserve and verify the replaced file preimage backup."
+            : "Record each created path and remove only unchanged owned content.",
+      })),
+      provenance: {
+        origin: "agent_learned",
+        evidenceRefs,
+        derivedFromInstallationIds: [input.installationId],
+        legacyAdapterBinding: null,
+      },
+      confidence: {
+        deterministicSignals: [
+          "game-identity",
+          `package-${unit.packageType}`,
+          ...(nexusIdentity === null ? [] : ["nexus-source-identity"]),
+          ...fileOperations
+            .filter((candidate) => candidate.kind !== "ensure_directory")
+            .map((_, index) => `mapped-source-${index + 1}`),
         ],
         successfulApplications: 1,
         failedApplications: 0,
@@ -466,6 +654,45 @@ export function instantiateLearnedMethod(input: {
             )?.level ?? "manual_recovery",
         };
       }
+      if (template.kind === "ensure_directory") {
+        return {
+          operationId: randomUUID(),
+          kind: "ensure_directory",
+          sourceRelativePath: null,
+          targetRelativePath: expandTemplate(
+            template.targetTemplate,
+            replacements,
+          ),
+          ownershipMode: null,
+        };
+      }
+      if (
+        template.kind === "install_new_file" ||
+        template.kind === "replace_file"
+      ) {
+        if (template.sourceTemplate === null) {
+          throw new NexusError(
+            "METHOD_STALE",
+            `Learned ${template.kind} has no source template.`,
+          );
+        }
+        return {
+          operationId: randomUUID(),
+          kind: template.kind,
+          sourceRelativePath: expandTemplate(
+            template.sourceTemplate,
+            replacements,
+          ),
+          targetRelativePath: expandTemplate(
+            template.targetTemplate,
+            replacements,
+          ),
+          ownershipMode:
+            template.kind === "install_new_file"
+              ? ("installed_file_set" as const)
+              : ("layered_path" as const),
+        };
+      }
       if (template.kind !== "install_tree") {
         throw new NexusError(
           "OPERATION_CAPABILITY_MISSING",
@@ -488,6 +715,9 @@ export function instantiateLearnedMethod(input: {
     });
   const installer = operations.some(
     (operation) => operation.kind === "run_bundled_installer",
+  );
+  const replacesFiles = operations.some(
+    (operation) => operation.kind === "replace_file",
   );
   return {
     strategyBinding: {
@@ -512,10 +742,16 @@ export function instantiateLearnedMethod(input: {
       ),
     unresolvedChoices: [],
     risk: {
-      level: installer ? "high" : "low",
+      level: installer || replacesFiles ? "high" : "low",
       reasons: installer
         ? ["A learned Method will execute one evidence-hashed bundled installer."]
-        : ["A verified Method installs one self-contained package tree."],
+        : replacesFiles
+          ? [
+              "A verified Method will replace one or more bounded files with backup-backed operations.",
+            ]
+          : [
+              "A verified Method installs one self-contained package tree or bounded file mapping.",
+            ],
     },
   };
 }

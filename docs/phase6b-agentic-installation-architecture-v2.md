@@ -1038,4 +1038,64 @@ Evidence 和后续 Snapshot。
 - MCP 工具发布；
 - 原有 Contract V1/V2、下载、受控安装器和学习复用回归。
 
+### M4 收尾：无歧义下载与 Portable Tool（2026-07-28）
+
+Download Plan 继续作为文件选择、依赖闭包、Bundle 和审计的强制机器契约，但不再等同于每次都要
+单独人工批准。`download-nexus-mods` 将 Plan 分为：
+
+- `auto_safe`：准确 Mod、无歧义 active MAIN、无结构 blocker，且没有超出明确安装/前置依赖授权的文件；
+- `review_required`：存在版本、平台、Loader、额外文件、非 MAIN 文件、手工依赖或其他实质选择；
+- `blocked`：依赖环、遍历截断、不可用节点、缺少证明等结构问题，人工同意也不能绕过。
+
+`plan_mod_download` 接收由明确用户意图推导的
+`authorizationScope=root_only | root_and_required_dependencies`，并由 MCP 返回确定性的
+`review.classification` 和 reasons；Skill 只能服从该结果，不能自行把
+`review_required` 降级成 `auto_safe`。
+
+因此“下载并安装一个无依赖、唯一 MAIN 文件的准确 Mod”会保留完整 Download Plan 校验，但不再浪费
+一个“批准下载”回合。Install Plan 的目标写入/执行审批边界本次不变。
+
+Package Analyzer 升级为 `package-analyzer@4`。当安全 ZIP 没有受支持 Manifest、没有安装器信号，
+并且恰好只有一个 `.exe` 时，Analyzer 生成有证据约束的 `self-contained-folder` Package Unit：
+
+- 单文件根目录使用 `packageRoot="."`；
+- `query_install_methods` 返回 `construct_agent_file_proposal`，不再以 `PACKAGE_UNIT_MISSING` 停止；
+- 只允许通过 `install_tree` 部署完整 Archive，安装过程不得运行 EXE；
+- 作者文档仍必须证明目标位置，实际游戏内容目录继续保持 protected；
+- 学习到的 Method 额外绑定 portable entry 文件名，避免对同一游戏所有未知文件包过度泛化。
+
+真实 Tarnished Tool 9277/fileId 48456 Archive 已通过只读验收：Analyzer 从唯一
+`TarnishedTool.exe` 生成 `self-contained-folder`、`packageRoot="."` 和确定性 Package Unit。
+沙箱端到端验收进一步证明该 Unit 能冻结为 `install_tree`、部署到全新独占目录、完成静态校验和
+Installation Record，同时没有执行 payload。
+
+### M4 收尾：Root-overlay 文件映射（2026-07-28）
+
+`package-analyzer@5` 为以下安全 ZIP 生成 `root-overlay` Package Unit：
+
+- 没有受支持的 Manifest；
+- 没有受支持的安装器；
+- 没有便携 EXE 候选；
+- 至少包含一个普通文件。
+
+该 Unit 使用 `packageRoot="."`，只证明完整 Archive 是一个可选择、受 Evidence 约束的源文件树，不证明目标根目录。Analyzer 保留 `unknown-package-type` ambiguity，要求 Agent 通过作者说明和 Dynamic Game Context 证明每个映射。
+
+V2 文件 Proposal 和冻结桥现支持：
+
+- `ensure_directory`：保证目录存在；已存在的共享目录不被重新创建或声明所有权；
+- `install_new_file`：只写入不存在的目标，记录精确文件所有权；
+- `replace_file`：只替换已存在的普通文件，必须是 high-risk Proposal，并保存可验证 preimage backup；
+- `install_tree`：继续只用于一个完整源树到全新目录，不用于合并共享目录。
+
+所有源文件必须精确存在于 Evidence inventory 且位于所选 Package Unit。所有目标逐项通过 writable/protected root 校验；目标父目录必须已存在，或由更早的 `ensure_directory` 操作创建。冻结阶段读取现有 Installation Records，拒绝替换其他受管安装拥有的路径。
+
+静态验证把 `ensure_directory` 解释为“目录仍存在”，而不要求其内容永久为空；实际文件仍由各自的 file operation outcome 负责验证和卸载。成功的多文件 Agent Proposal 会学习为一个多操作 Method。对 `root-overlay`，Method 同时绑定游戏身份、Package 类型、完整源路径信号和 Nexus Mod source identity，避免无关文件树误复用。
+
+真实归档验收使用 Nexus `eldenring:117` 与 `eldenring:4177`：
+
+1. Elden Mod Loader 生成 `root-overlay`，冻结为一个目录保证和两个新文件操作；
+2. Free Lock-On Camera 生成 `root-overlay`，在共享 `Game/mods` 下冻结为两个目录保证和三个新文件操作；
+3. 两个事务均通过静态验证并产生 `local_verified` Method；
+4. Loader 的多操作 Method 在第二个临时游戏实例中通过 fresh Evidence、Context、Plan 和审批链成功复用。
+
 每个里程碑完成后单独提交和验收。M4 通过后，V1 规划层代码才能正式标记为退役。

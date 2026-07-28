@@ -62,6 +62,9 @@ async function assertRealDirectory(directory: string): Promise<void> {
 }
 
 function resolveStagedSource(stagingRoot: string, relativePath: string): string {
+  if (relativePath === ".") {
+    return path.resolve(stagingRoot);
+  }
   const normalized = normalizeManagedRelativePath(relativePath);
   const absolutePath = path.resolve(stagingRoot, ...normalized.split("/"));
   const relative = path.relative(stagingRoot, absolutePath);

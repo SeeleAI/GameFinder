@@ -27,6 +27,10 @@ These are not persistent per-Mod Recipes. Method captures reusable knowledge; Pr
 - Dynamic writable roots are evidence-backed and bounded; protected roots cannot be overridden.
 - A missing prewritten Adapter is not a planning failure.
 - Proposal validation is deterministic and cannot write the game.
+- A verified whole-Archive package may use `packageRoot="."`; the file executor resolves it only to the verified staging root, never to a filesystem or game root.
+- A `root-overlay` Package Unit proves only a bounded source tree. The Proposal must enumerate exact file mappings; each target is independently checked against writable and protected roots.
+- Shared-directory creation carries an existence guarantee rather than ownership of later child content. File operations remain the durable ownership and uninstall authority.
+- `replace_file` is high risk, backup-backed, and cannot replace a path already owned by another managed installation.
 - Plan V2 is immutable, expiring, and hash-bound to Evidence, Context, strategy, operations, and pre-state.
 - Apply accepts only `planId`.
 - Game writes run through locks, process guards, backups, journals, verification, and automatic rollback.

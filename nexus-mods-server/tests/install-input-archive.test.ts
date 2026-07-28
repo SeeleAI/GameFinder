@@ -347,7 +347,7 @@ describe("analyzePackageInventory", () => {
 
     const analysis = await analyzePackageInventory(inventory);
 
-    expect(analysis.analyzerVersion).toBe("package-analyzer@3");
+    expect(analysis.analyzerVersion).toBe("package-analyzer@5");
     expect(analysis.packages).toEqual([
       expect.objectContaining({
         packageType: "loader-plugin",
@@ -398,5 +398,100 @@ describe("analyzePackageInventory", () => {
       }),
     );
     expect(analysis.packages[0]?.negativeSignals[0]).toContain("Missing.dll");
+  });
+
+  it("exposes one non-installer executable as a bounded portable file package", async () => {
+    const directory = await makeTemporaryDirectory();
+    const archivePath = path.join(directory, "TarnishedTool.zip");
+    await writeZip(archivePath, [
+      {
+        path: "TarnishedTool.exe",
+        content: "portable-tool-payload",
+      },
+    ]);
+    const archiveInfo = await stat(archivePath);
+    const inventory = await inspectZipArchive({
+      archive: {
+        absolutePath: archivePath,
+        fileName: path.basename(archivePath),
+        bytes: archiveInfo.size,
+        sha256: await sha256File(archivePath),
+      },
+    });
+
+    const analysis = await analyzePackageInventory(inventory);
+
+    expect(analysis.packages).toEqual([
+      expect.objectContaining({
+        packageType: "self-contained-folder",
+        packageRoot: ".",
+        identity: {
+          uniqueId: "portable-tool:tarnishedtool.exe",
+          name: "TarnishedTool",
+          version: null,
+        },
+        entryFiles: ["TarnishedTool.exe"],
+        positiveSignals: [
+          expect.stringContaining("Portable executable candidate"),
+          expect.stringContaining("exactly one executable"),
+          expect.stringContaining("without executing"),
+        ],
+      }),
+    ]);
+    expect(analysis.ambiguities).toContainEqual(
+      expect.objectContaining({
+        code: "unknown-package-type",
+        packageUnitIds: [analysis.packages[0]?.packageUnitId],
+      }),
+    );
+  });
+
+  it("exposes a manifest-free DLL and config tree as a bounded root-overlay package", async () => {
+    const directory = await makeTemporaryDirectory();
+    const archivePath = path.join(directory, "EldenModLoader.zip");
+    await writeZip(archivePath, [
+      {
+        path: "dinput8.dll",
+        content: "loader-proxy",
+      },
+      {
+        path: "mod_loader_config.ini",
+        content: "[modloader]",
+      },
+    ]);
+    const archiveInfo = await stat(archivePath);
+    const inventory = await inspectZipArchive({
+      archive: {
+        absolutePath: archivePath,
+        fileName: path.basename(archivePath),
+        bytes: archiveInfo.size,
+        sha256: await sha256File(archivePath),
+      },
+    });
+
+    const analysis = await analyzePackageInventory(inventory);
+
+    expect(analysis.analyzerVersion).toBe("package-analyzer@5");
+    expect(analysis.packages).toEqual([
+      expect.objectContaining({
+        packageType: "root-overlay",
+        packageRoot: ".",
+        identity: {
+          uniqueId: "root-overlay:eldenmodloader",
+          name: "EldenModLoader",
+          version: null,
+        },
+        entryFiles: ["dinput8.dll", "mod_loader_config.ini"],
+        positiveSignals: expect.arrayContaining([
+          expect.stringContaining("root-overlay"),
+        ]),
+      }),
+    ]);
+    expect(analysis.ambiguities).toContainEqual(
+      expect.objectContaining({
+        code: "unknown-package-type",
+        packageUnitIds: [analysis.packages[0]?.packageUnitId],
+      }),
+    );
   });
 });

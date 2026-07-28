@@ -9,7 +9,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { DownloadBundleService } from "../src/download-bundle-service.js";
+import {
+  classifyDownloadPlanReview,
+  DownloadBundleService,
+} from "../src/download-bundle-service.js";
 import type { DownloadReceipt } from "../src/download-verifier.js";
 import { NexusClient } from "../src/nexus-client.js";
 import type {
@@ -217,6 +220,13 @@ describe("dependency-aware Download Plan and Bundle Manifest", () => {
       smapiFile.fileId,
       rootFile.fileId,
     ]);
+    expect(classifyDownloadPlanReview(plan, "root_only")).toMatchObject({
+      classification: "review_required",
+      reasons: expect.arrayContaining([
+        expect.stringContaining("root-only authorization"),
+        expect.stringContaining("version note"),
+      ]),
+    });
 
     const [rootReceipt, smapiReceipt] = await Promise.all([
       writeReceipt({
@@ -295,5 +305,41 @@ describe("dependency-aware Download Plan and Bundle Manifest", () => {
     expect(
       plan.items.filter((item) => item.action === "download"),
     ).toHaveLength(1);
+    expect(classifyDownloadPlanReview(plan, "root_only")).toEqual({
+      classification: "auto_safe",
+      authorizationScope: "root_only",
+      reasons: [],
+    });
+  });
+
+  it("classifies one unambiguous dependency-free MAIN file as auto-safe", async () => {
+    const managerRoot = await temporaryDirectory("bundle-manager-");
+    const service = await DownloadBundleService.create({
+      client: new DependencyClient("fake-key"),
+      managerRoot,
+    });
+    const plan = await service.plan({
+      modUrl: smapiMod.canonicalUrl,
+      rootFileId: smapiFile.fileId,
+    });
+
+    expect(plan.items).toEqual([
+      expect.objectContaining({
+        nodeId: "nexus:stardewvalley:2400",
+        role: "root",
+        action: "download",
+        selectedFile: expect.objectContaining({ fileId: smapiFile.fileId }),
+      }),
+    ]);
+    expect(
+      classifyDownloadPlanReview(
+        plan,
+        "root_and_required_dependencies",
+      ),
+    ).toEqual({
+      classification: "auto_safe",
+      authorizationScope: "root_and_required_dependencies",
+      reasons: [],
+    });
   });
 });

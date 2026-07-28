@@ -14,7 +14,7 @@ import type {
 } from "./contracts.js";
 import { packageAnalysisSchema } from "./contracts.js";
 
-export const PACKAGE_ANALYZER_VERSION = "package-analyzer@3";
+export const PACKAGE_ANALYZER_VERSION = "package-analyzer@5";
 
 const smapiDependencySchema = z.object({
   UniqueID: z.string().trim().min(1),
@@ -72,6 +72,20 @@ function executableInstallerCandidates(
     if (!/\.(?:exe|js)$/i.test(basename)) return false;
     return /(?:^|[-_. ])(?:install(?:er)?|setup)(?:[-_. ]|$)/i.test(basename);
   });
+}
+
+function portableExecutableCandidates(
+  inventory: ArchiveInventory,
+): ReadonlyArray<ArchiveInventory["entries"][number]> {
+  return inventory.entries.filter(
+    (entry) =>
+      entry.kind === "file" &&
+      path.posix.extname(entry.normalizedPath).toLowerCase() === ".exe",
+  );
+}
+
+function portablePackageRoot(inventory: ArchiveInventory): string {
+  return inventory.commonTopLevelDirectory ?? ".";
 }
 
 function installerPackageRoot(
@@ -249,6 +263,100 @@ export async function analyzePackageInventory(
         message:
           "Multiple bundled installer candidates were found; an exact package unit must be selected.",
         packageUnitIds: packages.map((unit) => unit.packageUnitId),
+      });
+    }
+  }
+
+  if (packages.length === 0 && manifestEntries.length === 0) {
+    const executableEntries = portableExecutableCandidates(inventory);
+    if (executableEntries.length === 1) {
+      const entry = executableEntries[0]!;
+      const packageRoot = portablePackageRoot(inventory);
+      const entryName = path.posix.basename(
+        entry.normalizedPath,
+        path.posix.extname(entry.normalizedPath),
+      );
+      const uniqueId = `portable-tool:${entry.normalizedPath.toLowerCase()}`;
+      const packageId = packageUnitId(uniqueId, packageRoot);
+      packages.push({
+        packageUnitId: packageId,
+        packageType: "self-contained-folder",
+        packageRoot,
+        identity: {
+          uniqueId,
+          name: entryName,
+          version: null,
+        },
+        entryFiles: [entry.normalizedPath],
+        dependencies: [],
+        positiveSignals: [
+          `Portable executable candidate ${entry.normalizedPath}.`,
+          "The safe Archive contains exactly one executable and no supported installer or package manifest.",
+          "The complete Archive can be deployed as one isolated file tree without executing its executable.",
+        ],
+        negativeSignals: [
+          "No machine-readable package manifest declares the target location; author documentation must justify the deployment directory.",
+        ],
+      });
+      ambiguities.push({
+        code: "unknown-package-type",
+        message:
+          "A bounded self-contained portable candidate was found. Confirm its deployment location from author documentation; never treat it as an installer or execute it during installation.",
+        packageUnitIds: [packageId],
+      });
+    }
+  }
+
+  if (
+    packages.length === 0 &&
+    manifestEntries.length === 0 &&
+    portableExecutableCandidates(inventory).length === 0
+  ) {
+    const fileEntries = inventory.entries
+      .filter((entry) => entry.kind === "file")
+      .sort((left, right) =>
+        left.normalizedPath.localeCompare(right.normalizedPath, "en", {
+          sensitivity: "variant",
+        }),
+      );
+    if (fileEntries.length > 0) {
+      const archiveName =
+        path.posix.parse(inventory.archive.fileName.replaceAll("\\", "/"))
+          .name || "archive";
+      const uniqueId = `root-overlay:${archiveName.toLowerCase()}`.slice(
+        0,
+        200,
+      );
+      const packageRoot = ".";
+      const packageId = packageUnitId(uniqueId, packageRoot);
+      packages.push({
+        packageUnitId: packageId,
+        packageType: "root-overlay",
+        packageRoot,
+        identity: {
+          uniqueId,
+          name: archiveName.slice(0, 200),
+          version: null,
+        },
+        entryFiles: fileEntries
+          .slice(0, 100)
+          .map((entry) => entry.normalizedPath),
+        dependencies: [],
+        positiveSignals: [
+          `The safe Archive contains ${fileEntries.length} regular file entries.`,
+          "No supported manifest, bundled installer, or portable executable candidate claimed the Archive.",
+          "The complete Archive is selectable as one evidence-bounded root-overlay candidate.",
+        ],
+        negativeSignals: [
+          "The Archive does not declare a target root. Author documentation and Dynamic Game Context must justify every source-to-target mapping.",
+          "Selecting this Package Unit does not authorize copying the Archive wholesale or widening the writable-root policy.",
+        ],
+      });
+      ambiguities.push({
+        code: "unknown-package-type",
+        message:
+          "A bounded root-overlay candidate was found. Confirm the target root and every mapped path from authoritative documentation and the Dynamic Game Context.",
+        packageUnitIds: [packageId],
       });
     }
   }

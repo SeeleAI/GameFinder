@@ -35,7 +35,7 @@ Read:
 
 For Bundles, process required dependencies in `installOrder`. Freeze and approve one current Plan at a time; do not preapprove later nodes.
 
-M2 executes bounded file-tree installation without a prewritten Adapter. M3 additionally executes one evidence-hashed bundled installer through a fixed runtime, minimal environment, timeout, declared write roots, pre-state snapshots, backups, complete game-root side-effect observation, and bounded recovery. A controlled-installer Proposal is always high risk and must declare the smallest justified write roots and required postconditions.
+M2 executes bounded whole-tree and source-to-target file mappings without a prewritten Adapter. This includes manifest-free `root-overlay` packages, but only through exact writable paths and reviewable `ensure_directory`, `install_new_file`, or backup-backed `replace_file` operations. M3 additionally executes one evidence-hashed bundled installer through a fixed runtime, minimal environment, timeout, declared write roots, pre-state snapshots, backups, complete game-root side-effect observation, and bounded recovery. A controlled-installer Proposal is always high risk and must declare the smallest justified write roots and required postconditions.
 
 ## Hard boundaries
 

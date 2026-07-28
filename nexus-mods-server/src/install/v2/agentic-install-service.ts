@@ -21,6 +21,7 @@ import {
   inspectOperationConflict,
   preconditionStateHash,
 } from "../core/conflict-detector.js";
+import type { ManagedPathOwnership } from "../core/conflict-detector.js";
 import { StagingManager } from "../core/staging-manager.js";
 import { inspectPathState } from "../core/tree-state.js";
 import { hashZipFileEntry } from "../archive-inspector.js";
@@ -129,6 +130,13 @@ export interface AgenticMethodQueryResult {
       state: "available";
       executableIn: "M2";
     };
+    fileMapping: {
+      operationKinds: ReadonlyArray<
+        "ensure_directory" | "install_new_file" | "replace_file"
+      >;
+      state: "available";
+      executableIn: "M2";
+    };
     runBundledInstaller: {
       operationKind: "run_bundled_installer";
       state: "available";
@@ -186,6 +194,15 @@ export interface DependencySnapshotCaptureResult {
 const M3_OPERATION_CAPABILITIES = {
   installTree: {
     operationKind: "install_tree",
+    state: "available",
+    executableIn: "M2",
+  },
+  fileMapping: {
+    operationKinds: [
+      "ensure_directory",
+      "install_new_file",
+      "replace_file",
+    ],
     state: "available",
     executableIn: "M2",
   },
@@ -518,6 +535,77 @@ export class AgenticInstallService {
     failures: Array<{ installationId: string; message: string }>;
   }> {
     return await this.#dependencies.reconcile();
+  }
+
+  async #managedOwnership(
+    context: DynamicGameContext,
+  ): Promise<ReadonlyArray<ManagedPathOwnership>> {
+    const ownership: ManagedPathOwnership[] = [];
+    const expectedRoot = path.resolve(context.instance.gameRoot);
+    const foldedExpectedRoot =
+      context.instance.operatingSystem === "win32"
+        ? expectedRoot.toLowerCase()
+        : expectedRoot;
+    for (const record of await this.#legacy.listInstallations()) {
+      if (
+        record.state === "uninstalled" ||
+        record.state === "uninstalled_with_retained_data"
+      ) {
+        continue;
+      }
+      const installedContext = await this.#legacy.getInstallationContext(
+        record.installationId,
+      );
+      const recordRoot = path.resolve(installedContext.instance.gameRoot);
+      const foldedRecordRoot =
+        context.instance.operatingSystem === "win32"
+          ? recordRoot.toLowerCase()
+          : recordRoot;
+      if (foldedRecordRoot !== foldedExpectedRoot) continue;
+      const modUniqueId = record.packageSummary.identity.uniqueId;
+      for (const outcome of record.operationOutcomes) {
+        if (
+          outcome.operationKind === "install_new_file" ||
+          outcome.operationKind === "replace_file"
+        ) {
+          ownership.push({
+            targetRelativePath: outcome.targetRelativePath,
+            installationId: record.installationId,
+            modUniqueId,
+            recordedPostState: outcome.postState,
+          });
+          continue;
+        }
+        if (
+          outcome.operationKind !== "install_tree" &&
+          outcome.operationKind !== "replace_managed_tree"
+        ) {
+          continue;
+        }
+        if (outcome.ownershipMode === "exclusive_tree") {
+          ownership.push({
+            targetRelativePath: outcome.targetRelativePath,
+            installationId: record.installationId,
+            modUniqueId,
+            recordedPostState: outcome.postState,
+          });
+          continue;
+        }
+        for (const file of outcome.ownedFiles) {
+          ownership.push({
+            targetRelativePath: `${outcome.targetRelativePath}/${file.relativePath}`,
+            installationId: record.installationId,
+            modUniqueId,
+            recordedPostState: {
+              kind: "file",
+              bytes: file.bytes,
+              sha256: file.sha256,
+            },
+          });
+        }
+      }
+    }
+    return ownership;
   }
 
   async probeGameContext(
@@ -1133,13 +1221,35 @@ export class AgenticInstallService {
     for (const operation of draft.operations) {
       if (
         operation.kind !== "install_tree" &&
+        operation.kind !== "ensure_directory" &&
+        operation.kind !== "install_new_file" &&
+        operation.kind !== "replace_file" &&
         operation.kind !== "run_bundled_installer"
       ) {
         throw new NexusError(
           "OPERATION_CAPABILITY_MISSING",
-          `M3 currently freezes install_tree or run_bundled_installer; ${operation.kind} is unavailable.`,
+          `Contract V2 cannot freeze ${operation.kind}.`,
         );
       }
+    }
+    const duplicateTargets = new Set<string>();
+    for (const operation of draft.operations) {
+      if (operation.kind === "run_bundled_installer") continue;
+      const normalizedTarget = normalizeManagedRelativePath(
+        operation.targetRelativePath,
+        context.instance.operatingSystem,
+      );
+      const targetKey =
+        context.instance.operatingSystem === "win32"
+          ? normalizedTarget.toLowerCase()
+          : normalizedTarget;
+      if (duplicateTargets.has(targetKey)) {
+        throw new NexusError(
+          "PROPOSAL_INVALID",
+          `Multiple file operations target ${operation.targetRelativePath}.`,
+        );
+      }
+      duplicateTargets.add(targetKey);
     }
     const binding = draft.strategyBinding;
     if (binding.origin === "agent_proposal") {
@@ -1260,6 +1370,87 @@ export class AgenticInstallService {
           platform: context.instance.operatingSystem,
         });
         continue;
+      }
+      if (operation.kind === "ensure_directory") {
+        if (
+          operation.sourceRelativePath !== null ||
+          operation.ownershipMode !== null
+        ) {
+          throw new NexusError(
+            "PROPOSAL_INVALID",
+            "ensure_directory requires a null source and null ownershipMode.",
+          );
+        }
+        resolveManagedTarget({
+          gameRoot: context.instance.gameRoot,
+          targetRelativePath: operation.targetRelativePath,
+          writableRoots,
+          protectedRoots,
+          platform: context.instance.operatingSystem,
+        });
+        continue;
+      }
+      if (
+        operation.kind === "install_new_file" ||
+        operation.kind === "replace_file"
+      ) {
+        if (operation.sourceRelativePath === null) {
+          throw new NexusError(
+            "PROPOSAL_INVALID",
+            `${operation.kind} requires one exact Archive source file.`,
+          );
+        }
+        const sourceEntry = evidence.archive.entries.find(
+          (entry) =>
+            entry.kind === "file" &&
+            entry.relativePath === operation.sourceRelativePath,
+        );
+        if (
+          !sourceEntry ||
+          (unit.packageRoot !== "." &&
+            operation.sourceRelativePath !== unit.packageRoot &&
+            !operation.sourceRelativePath.startsWith(
+              `${unit.packageRoot}/`,
+            ))
+        ) {
+          throw new NexusError(
+            "EVIDENCE_CONFLICT",
+            `${operation.sourceRelativePath} is not a file in the selected Package Unit.`,
+          );
+        }
+        const expectedOwnership =
+          operation.kind === "install_new_file"
+            ? "installed_file_set"
+            : "layered_path";
+        if (operation.ownershipMode !== expectedOwnership) {
+          throw new NexusError(
+            "PROPOSAL_INVALID",
+            `${operation.kind} requires ${expectedOwnership} ownership.`,
+          );
+        }
+        if (
+          operation.kind === "replace_file" &&
+          draft.risk.level !== "high"
+        ) {
+          throw new NexusError(
+            "PROPOSAL_INVALID",
+            "replace_file requires a high-risk Proposal and explicit Plan approval.",
+          );
+        }
+        resolveManagedTarget({
+          gameRoot: context.instance.gameRoot,
+          targetRelativePath: operation.targetRelativePath,
+          writableRoots,
+          protectedRoots,
+          platform: context.instance.operatingSystem,
+        });
+        continue;
+      }
+      if (operation.kind !== "run_bundled_installer") {
+        throw new NexusError(
+          "OPERATION_CAPABILITY_MISSING",
+          `Contract V2 cannot validate ${operation.kind}.`,
+        );
       }
       if (unit.packageType !== "executable-installer") {
         throw new NexusError(
@@ -1640,49 +1831,191 @@ export class AgenticInstallService {
         });
         return plan;
       }
+      const emptyDirectoryHash = sha256CanonicalJson({
+        files: [],
+        directories: [],
+      });
       const operations: InstallOperation[] = proposal.operations.map(
         (operation) => {
-          if (operation.kind !== "install_tree") {
-            throw new NexusError(
-              "OPERATION_CAPABILITY_MISSING",
-              "M2 can freeze only install_tree operations.",
-            );
+          if (operation.kind === "install_tree") {
+            return {
+              operationId: operation.operationId,
+              kind: "install_tree",
+              sourceRelativePath:
+                operation.sourceRelativePath ?? unit.packageRoot,
+              sourceTreeHash: staged.treeHash,
+              ownershipMode:
+                operation.ownershipMode === "exclusive_tree"
+                  ? "exclusive_tree"
+                  : "installed_file_set",
+              targetRelativePath: operation.targetRelativePath,
+              expectedPreState: { kind: "absent" },
+              expectedPostState: {
+                kind: "directory",
+                treeHash: staged.treeHash,
+                entries: staged.files.length + staged.directories.length,
+              },
+            };
           }
-          return {
-            operationId: operation.operationId,
-            kind: "install_tree",
-            sourceRelativePath: operation.sourceRelativePath ?? unit.packageRoot,
-            sourceTreeHash: staged.treeHash,
-            ownershipMode:
-              operation.ownershipMode === "exclusive_tree"
-                ? "exclusive_tree"
-                : "installed_file_set",
-            targetRelativePath: operation.targetRelativePath,
-            expectedPreState: { kind: "absent" },
-            expectedPostState: {
-              kind: "directory",
-              treeHash: staged.treeHash,
-              entries: staged.files.length + staged.directories.length,
-            },
-          };
+          if (operation.kind === "ensure_directory") {
+            return {
+              operationId: operation.operationId,
+              kind: "ensure_directory",
+              targetRelativePath: operation.targetRelativePath,
+              expectedPreState: { kind: "absent" },
+              expectedPostState: {
+                kind: "directory",
+                treeHash: emptyDirectoryHash,
+                entries: 0,
+              },
+            };
+          }
+          if (operation.kind === "install_new_file") {
+            if (operation.sourceRelativePath === null) {
+              throw new NexusError(
+                "PROPOSAL_INVALID",
+                "install_new_file has no source file.",
+              );
+            }
+            const packageRelativeSource =
+              unit.packageRoot === "."
+                ? operation.sourceRelativePath
+                : operation.sourceRelativePath.slice(
+                    unit.packageRoot.length + 1,
+                  );
+            const stagedFile = staged.files.find(
+              (file) => file.relativePath === packageRelativeSource,
+            );
+            if (!stagedFile) {
+              throw new NexusError(
+                "EVIDENCE_CONFLICT",
+                `Staging does not contain ${operation.sourceRelativePath} in the selected Package Unit.`,
+              );
+            }
+            const postState = {
+              kind: "file" as const,
+              bytes: stagedFile.bytes,
+              sha256: stagedFile.sha256,
+            };
+            return {
+              operationId: operation.operationId,
+              kind: "install_new_file",
+              sourceRelativePath: operation.sourceRelativePath,
+              sourceSha256: stagedFile.sha256,
+              targetRelativePath: operation.targetRelativePath,
+              expectedPreState: { kind: "absent" },
+              expectedPostState: postState,
+            };
+          }
+          if (operation.kind === "replace_file") {
+            if (operation.sourceRelativePath === null) {
+              throw new NexusError(
+                "PROPOSAL_INVALID",
+                "replace_file has no source file.",
+              );
+            }
+            const packageRelativeSource =
+              unit.packageRoot === "."
+                ? operation.sourceRelativePath
+                : operation.sourceRelativePath.slice(
+                    unit.packageRoot.length + 1,
+                  );
+            const stagedFile = staged.files.find(
+              (file) => file.relativePath === packageRelativeSource,
+            );
+            if (!stagedFile) {
+              throw new NexusError(
+                "EVIDENCE_CONFLICT",
+                `Staging does not contain ${operation.sourceRelativePath} in the selected Package Unit.`,
+              );
+            }
+            const postState = {
+              kind: "file" as const,
+              bytes: stagedFile.bytes,
+              sha256: stagedFile.sha256,
+            };
+            return {
+              operationId: operation.operationId,
+              kind: "replace_file",
+              sourceRelativePath: operation.sourceRelativePath,
+              sourceSha256: stagedFile.sha256,
+              targetRelativePath: operation.targetRelativePath,
+              expectedPreState: postState,
+              expectedPostState: postState,
+            };
+          }
+          throw new NexusError(
+            "OPERATION_CAPABILITY_MISSING",
+            `Contract V2 cannot freeze ${operation.kind}.`,
+          );
         },
       );
-      for (const operation of operations) {
-        validateOperationReversibility(operation);
-      }
       const writableRoots = gameRelativeRoots(context, "writableRoots");
       const protectedRoots = gameRelativeRoots(context, "protectedRoots");
-      const inspections = await Promise.all(
+      const ownership = await this.#managedOwnership(context);
+      const rawInspections = await Promise.all(
         operations.map((operation) =>
           inspectOperationConflict({
             operation,
             gameRoot: context.instance.gameRoot,
             writableRoots,
             protectedRoots,
+            ownership,
             installingModUniqueId: unit.identity.uniqueId,
           }),
         ),
       );
+      const inspections = rawInspections.map((inspection) => {
+        const operation = operations.find(
+          (candidate) => candidate.operationId === inspection.operationId,
+        );
+        if (
+          operation?.kind === "ensure_directory" &&
+          inspection.actualPreState.kind === "directory"
+        ) {
+          return {
+            ...inspection,
+            conflict: {
+              targetRelativePath: inspection.targetRelativePath,
+              kind: "same_content" as const,
+              blocking: false,
+              message:
+                "The required directory already exists and will not be claimed or recreated.",
+            },
+          };
+        }
+        if (
+          operation?.kind === "replace_file" &&
+          inspection.actualPreState.kind === "file" &&
+          inspection.conflict.kind === "unmanaged_existing"
+        ) {
+          return {
+            ...inspection,
+            conflict: {
+              ...inspection.conflict,
+              blocking: false,
+              message:
+                "The Proposal explicitly replaces this unmanaged file and the executor will preserve a verified backup.",
+            },
+          };
+        }
+        if (
+          operation?.kind === "replace_file" &&
+          inspection.actualPreState.kind === "absent"
+        ) {
+          return {
+            ...inspection,
+            conflict: {
+              targetRelativePath: inspection.targetRelativePath,
+              kind: "unmanaged_existing" as const,
+              blocking: true,
+              message:
+                "replace_file requires an existing regular file; use install_new_file for an absent target.",
+            },
+          };
+        }
+        return inspection;
+      });
       const blocking = inspections.filter(
         (inspection) => inspection.conflict.blocking,
       );
@@ -1697,17 +2030,60 @@ export class AgenticInstallService {
           },
         );
       }
+      const availablePlannedDirectories = new Set<string>();
+      for (const operation of operations) {
+        const resolved = resolveManagedTarget({
+          gameRoot: context.instance.gameRoot,
+          targetRelativePath: operation.targetRelativePath,
+          writableRoots,
+          protectedRoots,
+          platform: context.instance.operatingSystem,
+        });
+        const parent = path.dirname(resolved.targetAbsolutePath);
+        const parentKey =
+          context.instance.operatingSystem === "win32"
+            ? parent.toLowerCase()
+            : parent;
+        if (!availablePlannedDirectories.has(parentKey)) {
+          const parentInfo = await lstat(parent).catch(() => null);
+          if (
+            parentInfo === null ||
+            !parentInfo.isDirectory() ||
+            parentInfo.isSymbolicLink()
+          ) {
+            throw new NexusError(
+              "PROPOSAL_INVALID",
+              `The parent of ${operation.targetRelativePath} is not an existing real directory or an earlier ensure_directory target.`,
+            );
+          }
+        }
+        if (operation.kind === "ensure_directory") {
+          const targetKey =
+            context.instance.operatingSystem === "win32"
+              ? resolved.targetAbsolutePath.toLowerCase()
+              : resolved.targetAbsolutePath;
+          availablePlannedDirectories.add(targetKey);
+        }
+      }
       const finalizedOperations = operations.map((operation) => {
         const inspection = inspections.find(
           (candidate) => candidate.operationId === operation.operationId,
         );
+        const actualPreState = inspection?.actualPreState ?? {
+          kind: "absent" as const,
+        };
         return {
           ...operation,
-          expectedPreState: inspection?.actualPreState ?? {
-            kind: "absent" as const,
-          },
+          expectedPreState: actualPreState,
+          ...(operation.kind === "ensure_directory" &&
+          actualPreState.kind === "directory"
+            ? { expectedPostState: actualPreState }
+            : {}),
         };
       });
+      for (const operation of finalizedOperations) {
+        validateOperationReversibility(operation);
+      }
       const { profile, instance } = v1ProfileAndInstance(context);
       const analysis = packageAnalysisFromEvidence(evidence, unit);
       const v1Plan = await this.#v1PlanStore.save(

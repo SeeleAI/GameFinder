@@ -492,6 +492,20 @@ export class InstallService {
     return await this.#recordStore.get(installationId);
   }
 
+  async listInstallations() {
+    return await this.#recordStore.listAll();
+  }
+
+  async getInstallationContext(installationId: string) {
+    const record = await this.#recordStore.get(installationId);
+    const context = await this.#contextStore.get(record.sourcePlanId);
+    return {
+      record,
+      profile: context.profile,
+      instance: context.instance,
+    };
+  }
+
   async verifyInstallation(installationId: string) {
     const record = await this.#recordStore.get(installationId);
     const context = await this.#contextStore.get(record.sourcePlanId);

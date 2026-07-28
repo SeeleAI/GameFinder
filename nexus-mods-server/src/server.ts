@@ -11,6 +11,7 @@ import {
   InstallService,
   resolveDefaultManagerRoot
 } from "./install/install-service.js";
+import { LocalInstallationQueryService } from "./install/local-installation-query.js";
 import {
   AgenticInstallService,
   installProposalDraftSchema
@@ -155,6 +156,9 @@ export function createNexusMcpServer(
   const managerRoot = options.managerRoot ?? resolveDefaultManagerRoot();
   let installServicePromise: Promise<InstallService> | undefined;
   let agenticInstallServicePromise: Promise<AgenticInstallService> | undefined;
+  let localInstallationQueryServicePromise:
+    | Promise<LocalInstallationQueryService>
+    | undefined;
   let downloadBundleServicePromise: Promise<DownloadBundleService> | undefined;
   const installs = (): Promise<InstallService> => {
     installServicePromise ??= InstallService.create(
@@ -168,6 +172,13 @@ export function createNexusMcpServer(
     );
     return agenticInstallServicePromise;
   };
+  const localInstallationQueries =
+    (): Promise<LocalInstallationQueryService> => {
+      localInstallationQueryServicePromise ??= installs().then((legacy) =>
+        LocalInstallationQueryService.create({ managerRoot, legacy })
+      );
+      return localInstallationQueryServicePromise;
+    };
   const downloadBundles = (): Promise<DownloadBundleService> => {
     downloadBundleServicePromise ??= DownloadBundleService.create({
       client,
@@ -179,7 +190,7 @@ export function createNexusMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact plan review, explicit approval, and apply_agentic_install_plan(planId). Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and approval. Never replace MCP installation tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact plan review, explicit approval, and apply_agentic_install_plan(planId). Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and approval. Never replace MCP installation tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall."
     }
   );
 
@@ -518,6 +529,54 @@ export function createNexusMcpServer(
             ok: true,
             dependencyResolution: resolution,
             meta: meta("nexus-graphql-v2", resolution.quota, resolution.warnings)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "find_installed_nexus_mod",
+    {
+      title: "Find successful local installations of one Nexus Mod",
+      description:
+        "Find successful managed Installation Records for one canonical Nexus Mod without guessing UUIDs. Searches both file-transaction and controlled-installer records, optionally scopes to an exact game root, evaluates only explicit numeric version constraints, re-verifies file installs, and returns the Evidence/Context needed to probe installer-based loaders before using satisfiedNodeIds.",
+      inputSchema: {
+        modUrl: z.string().url(),
+        gameRoot: z
+          .string()
+          .min(3)
+          .optional()
+          .describe("Optional exact absolute game root used to exclude records for other game instances."),
+        versionConstraint: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("Optional explicit numeric constraint such as v4.1.7+, >=4.1.7, or =4.5.2. Natural-language notes remain unknown.")
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ modUrl, gameRoot, versionConstraint }) =>
+      safe(async () => {
+        const ref = parseModRef(modUrl);
+        const service = await localInstallationQueries();
+        const result = await service.find({
+          domainName: ref.domainName,
+          modId: ref.modId,
+          canonicalModUrl: ref.canonicalUrl,
+          ...(gameRoot === undefined ? {} : { gameRoot }),
+          ...(versionConstraint === undefined ? {} : { versionConstraint })
+        });
+        return ok(
+          `Found ${result.counts.matches} successful managed installation records for ${ref.domainName}:${ref.modId}: ${result.counts.satisfied} currently satisfied, ${result.counts.candidatesRequiringProbe} requiring a fresh loader probe, and ${result.counts.notSatisfied} not satisfying the requested constraint or current check.`,
+          {
+            ok: true,
+            ...result,
+            meta: meta("local", null, [
+              "A controlled-installer record is only a candidate until the exact game root is freshly probed and the expected loader/runtime is detected.",
+              "Unsupported or natural-language version requirements remain unknown and must not be marked satisfied."
+            ])
           }
         );
       })

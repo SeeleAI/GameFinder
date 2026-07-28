@@ -19,6 +19,7 @@ import {
   AgenticInstallService,
   ControlledInstallerJournalStore,
   InstallService,
+  LocalInstallationQueryService,
   sha256File,
 } from "../src/install/index.js";
 
@@ -302,6 +303,43 @@ describe("Phase 6B V2 M3 controlled bundled installer", () => {
     expect(await readFile(path.join(target, "loader.txt"), "utf8")).toBe(
       "installed",
     );
+
+    const legacy = await InstallService.create({
+      managerRoot: fixture.managerRoot,
+    });
+    const localInstallations = await LocalInstallationQueryService.create({
+      managerRoot: fixture.managerRoot,
+      legacy,
+    });
+    const found = await localInstallations.find({
+      domainName: "examplegame",
+      modId: 2400,
+      canonicalModUrl: "https://www.nexusmods.com/examplegame/mods/2400",
+      gameRoot: fixture.gameRoot,
+    });
+    expect(found).toMatchObject({
+      counts: {
+        matches: 1,
+        satisfied: 0,
+        candidatesRequiringProbe: 1,
+        notSatisfied: 0,
+      },
+      matches: [
+        {
+          recordKind: "controlled_installer",
+          installationId: result.record.installationId,
+          currentVerification: { status: "requires_probe" },
+          dependencySatisfaction: {
+            status: "candidate_requires_probe",
+            canMarkSatisfiedNode: false,
+          },
+          evidence: {
+            evidencePackId: result.record.evidencePackId,
+            gameContextId: result.record.gameContextId,
+          },
+        },
+      ],
+    });
   });
 
   it("restores an existing declared root when the installer exits unsuccessfully", async () => {

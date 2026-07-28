@@ -358,6 +358,13 @@ export class AgenticObjectStore {
     bundleId: string,
   ): Promise<ReadonlyArray<InstallerInstallationRecord>> {
     assertUuid(bundleId, "bundleId");
+    const records = await this.listInstallerRecords();
+    return records.filter((record) => record.bundle?.bundleId === bundleId);
+  }
+
+  async listInstallerRecords(): Promise<
+    ReadonlyArray<InstallerInstallationRecord>
+  > {
     const records: InstallerInstallationRecord[] = [];
     for (const name of await readdir(this.#installerRecordRoot)) {
       if (!name.endsWith(".json")) continue;
@@ -367,7 +374,7 @@ export class AgenticObjectStore {
             await readFile(path.join(this.#installerRecordRoot, name), "utf8"),
           ) as unknown,
         );
-        if (record.bundle?.bundleId === bundleId) records.push(record);
+        records.push(record);
       } catch {
         // Corrupt records remain isolated and are surfaced by exact lookup.
       }

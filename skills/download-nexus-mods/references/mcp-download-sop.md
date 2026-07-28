@@ -28,12 +28,15 @@ Call `health_check` only when MCP or credential availability is uncertain. Use `
 
 Before `prepare_download`:
 
-1. Call `plan_mod_download(modUrl, rootFileId?, dependencyFileOverrides?, satisfiedNodeIds?)`.
-2. Stop on a blocked Plan, dependency cycle, depth limit, unavailable required node, or uncanonicalized dependency.
-3. Display the root and every dependency file selection, plus manual requirements.
-4. Obtain explicit approval of the returned `downloadPlanId`.
-5. Download each item whose action is `download`, in the Plan order.
-6. After all receipts exist, call `create_mod_bundle`.
+1. Resolve the dependency graph when local satisfaction or graph explanation is needed.
+2. For each potentially installed Nexus dependency, call `find_installed_nexus_mod(modUrl, gameRoot, versionConstraint?)`; never guess a record UUID.
+3. Accept a file-transaction dependency only when `canMarkSatisfiedNode=true`. For a controlled-installer Loader candidate, call `probe_game_context` on the same game root and require current Loader detection before accepting it.
+4. Call `plan_mod_download(modUrl, rootFileId?, dependencyFileOverrides?, satisfiedNodeIds?)`.
+5. Stop on a blocked Plan, dependency cycle, depth limit, unavailable required node, uncanonicalized dependency, unknown required version, or incomplete current-state proof.
+6. Display the root and every dependency file selection, satisfied-node evidence, plus manual requirements.
+7. Obtain explicit approval of the returned `downloadPlanId`.
+8. Download each item whose action is `download`, in the Plan order.
+9. After all receipts exist, call `create_mod_bundle`.
 
 Use `resolve_mod_dependencies` separately only when the graph needs explanation before file selection. Do not treat raw `get_mod_requirements` output as a complete download plan.
 

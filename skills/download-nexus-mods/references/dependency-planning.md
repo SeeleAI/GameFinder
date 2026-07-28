@@ -29,11 +29,12 @@ Never silently choose ARCHIVED, REMOVED, OLD, OPTIONAL, or MISCELLANEOUS files.
 
 Add a node to `satisfiedNodeIds` only when independent evidence establishes it for the target game instance:
 
-- A Game Profile detects the exact Loader/runtime.
-- A managed Installation Record identifies the dependency.
-- A version-aware probe proves the installed version meets the constraint.
+- Call `find_installed_nexus_mod` with the dependency's canonical Nexus URL, the exact target `gameRoot`, and its explicit numeric constraint when the requirement uses a supported form such as `v4.1.7+` or `>=4.1.7`.
+- For `recordKind: file_transaction`, require `dependencySatisfaction.canMarkSatisfiedNode=true`. The tool rechecks every recorded owned file and tolerates only extra runtime-generated or unmanaged data.
+- For `recordKind: controlled_installer`, require `versionConstraint.status` to be `satisfied` or `not_requested`, then call `probe_game_context` for the returned exact game root and matching registered Profile. Mark the node satisfied only when the expected Loader/runtime is currently detected.
+- Preserve the returned Installation ID, Evidence Pack ID, Game Context ID, Nexus file ID, version source, and probe evidence in the Plan explanation.
 
-Presence with unknown version is not equivalent to version compatibility. Present the uncertainty and ask whether to download a current package.
+Do not call `get_install_status` with guessed UUIDs. A historical record with a missing/modified owned file, failed version comparison, missing game root, unsupported natural-language constraint, or absent Loader probe does not satisfy the node. Presence with unknown version is not equivalent to version compatibility; present the uncertainty and ask whether to download a current package.
 
 ## Approval
 

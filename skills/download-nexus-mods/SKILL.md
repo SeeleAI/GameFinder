@@ -37,7 +37,7 @@ output_directory: C:\absolute\path
 backend: persistent_chromium
 ```
 
-Call `resolve_mod_dependencies` when the graph needs explanation, then call `plan_mod_download`. Treat the returned graph and file selections as authoritative.
+Call `resolve_mod_dependencies` when the graph needs explanation. Before passing any local dependency in `satisfiedNodeIds`, call `find_installed_nexus_mod` with its canonical Mod URL, exact target game root, and an explicit machine-readable version constraint when one exists; follow the returned current-verification guidance. Then call `plan_mod_download`. Treat the returned graph and file selections as authoritative.
 
 Show:
 
@@ -49,7 +49,7 @@ Show:
 - Cycles, depth limits, unavailable nodes, blockers, and evidence gaps.
 - `downloadPlanId` and expiry.
 
-Stop for explicit approval before starting downloads. A request to download the root Mod does not silently authorize additional files whose identities were not yet shown. Never mark a dependency satisfied from its name alone; use Game Profile/installation evidence or explicit user confirmation backed by evidence.
+Stop for explicit approval before starting downloads. A request to download the root Mod does not silently authorize additional files whose identities were not yet shown. Never guess Installation Record UUIDs or mark a dependency satisfied from its name alone. A `file_transaction` match may satisfy a node only when `canMarkSatisfiedNode=true`. A `controlled_installer` match remains a candidate until a fresh probe of the same game root detects the expected loader/runtime.
 
 If the user explicitly insists on root-only download after seeing required dependencies, download only the root and report that the result is not an installation-ready Bundle.
 

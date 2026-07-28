@@ -151,6 +151,11 @@ export class InstallationRecordStore {
   async listByInstance(
     gameInstanceId: string,
   ): Promise<ReadonlyArray<InstallationRecord>> {
+    const records = await this.listAll();
+    return records.filter((record) => record.gameInstanceId === gameInstanceId);
+  }
+
+  async listAll(): Promise<ReadonlyArray<InstallationRecord>> {
     const names = await readdir(this.#root);
     const records: InstallationRecord[] = [];
     for (const name of names) {
@@ -162,7 +167,7 @@ export class InstallationRecordStore {
         continue;
       }
       const record = await this.get(name);
-      if (record.gameInstanceId === gameInstanceId) records.push(record);
+      records.push(record);
     }
     return records.sort((left, right) =>
       left.installedAt.localeCompare(right.installedAt),

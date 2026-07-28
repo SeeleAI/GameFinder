@@ -682,6 +682,7 @@ Agent 根据结构化 next action 继续补证、询问选择或重新规划，�
 - `apply_mod_install(planId)`
 - `verify_mod_install(installationId, level?)`
 - `get_install_status(kind, id)`
+- `find_installed_nexus_mod(modUrl, gameRoot?, versionConstraint?)`
 - `rollback_mod_install(transactionId)`
 
 Apply 继续只接受 `planId`。
@@ -982,5 +983,22 @@ M2 独立 Session 收尾修正（2026-07-27）：
 - `query_install_methods.operationCapabilities` 公开两种 terminal mode 的宿主可用性。Validator 只允许 Windows MCP 宿主与 Windows Dynamic Game Context 使用 ConPTY，并在冻结前以 `OPERATION_CAPABILITY_MISSING` 拒绝不支持的组合。
 - 定向回归覆盖 ConPTY 控制台检测成功、终端输出净化、terminal mode 写入 Method、超时进程树终止与声明根回滚，以及非 Windows Context 的冻结前拒绝。
 - 旧失败 Plan 及其 Installation Record 保持不可变且不会重跑。能力完成后必须从当前 Bundle、Context 与 Evidence 重新生成并展示一个新的 SMAPI Plan，仍需用户对新 `planId` 单独批准。
+
+真实冷启动验收结果（2026-07-28）：
+
+- 新 SMAPI Plan `b2f0ba10-7c4d-4099-96d7-4673f06b5408` 通过 `pseudoterminal` 执行官方 `SMAPI.Installer.exe --install --game-path ... --no-prompt`。进程退出码为 0、未超时、静态验证通过、未声明变更为 0，Journal 状态为 `committed`，Installation ID 为 `e497b4ba-2cd0-4751-a0e2-20fe87bbabf1`。
+- SMAPI Agent Proposal 已沉淀为 `local_verified` Method `b6b9b43c-ad2e-48e7-94dc-e0876b85411b` revision 3；Method 模板保留 `terminalMode: pseudoterminal`。用户随后在游戏中确认 SMAPI 正常启动。本阶段按用户决定不新增运行时验证持久化对象。
+- 真实 Mod 2697 的 `manifest.json` 带 UTF-8 BOM。旧 Analyzer 在 `JSON.parse` 前未处理 BOM，导致 Archive 虽有标准 Manifest 与 EntryDll，却返回空 `packageUnits`。`package-analyzer@3` 现在只移除一个前导 `U+FEFF` 后解析，并继续执行原有 schema、EntryDll 存在性和 Archive 路径约束；真实 Archive 已识别为 `loader-plugin`，包根为 `SkipFishingMinigameDotnet5`，无歧义。
+- Mod 2697 Plan `ad43e1ec-205b-4b12-ae72-289591e21c09` 将固定 tree hash 的两文件包安装到 `Mods/SkipFishingMinigameDotnet5`。Installation ID `5e2e0987-a802-45c5-b7b1-0a6ac025cec9` 静态验证通过，复核时目标 tree hash 未变化；用户随后在 SMAPI 中确认 `SkipFishingMinigame` 成功加载。
+- 2697 Agent Proposal 已沉淀为通用 `local_verified` SMAPI 文件夹 Method `25f91f3b-ca76-4327-993a-a6c3217824db` revision 3。新的正式 stdio MCP 进程对同一 Evidence/Context 查询返回 `select_verified_method`，并精确命中该 Method，证明持久 Method Store 能在新服务进程中完成暖启动解析。
+- 正式 stdio 验收从当前 `dist/index.js` 启动独立 MCP 进程：42 个工具可列出，Contract V2 核心工具全部存在，`health_check` 通过，ConPTY capability 为 `available`，带 `terminalMode` 的两个已验证 Method 均可读取。旧任务内的热加载前 MCP 进程已停止；新任务应重新建立 MCP transport，不再复用旧进程内存。
+- Manager state 审计通过：`locks` 与 `staging` 均为空；没有 SMAPI Installer、游戏、staging 或验收客户端残留进程；旧失败 Plan 保持 `rolled_back`，新 SMAPI Plan 保持 `installed/committed`，2697 文件事务保持静态验证通过。
+- Bundle `27609156-029d-4ee3-90eb-ac0511a658ef` 已分别保存 `nexus:stardewvalley:2400` 与 `nexus:stardewvalley:2697` 的 completion Record，两个节点均绑定到各自成功 Installation ID。
+
+第二个真实标准 SMAPI Mod `UI Info Suite 2`（Nexus 7098）已完成盲测：独立 Session 未获得 Method ID 或预期答案，自主查询后选择 `select_verified_method`，通过 `instantiate_install_method` 复用 `25f91f3b-ca76-4327-993a-a6c3217824db` revision 3，冻结、审批、执行并静态验证成功。游戏内运行验证也由用户确认通过；Method Store 没有生成 7098 专用重复 Method，只向原 Method 追加成功 Outcome。
+
+依赖下载验收同时暴露出本地 Installation Record 只能按 UUID 精确读取，Agent 会尝试猜测历史 ID。现新增 `find_installed_nexus_mod`：按 canonical Nexus Mod URL、精确游戏目录与显式数字版本约束统一检索文件事务和受控安装器记录。文件事务会重新校验所有 owned files，并将运行后额外生成的配置数据降为 dependency-presence warning；受控安装器记录会解析 Evidence、Context、fileId 与 Bundle 中的版本，但必须再用相同 game root 做 Loader 探测，才允许写入 `satisfiedNodeIds`。真实状态验收已正确找到 SMAPI 4.5.2/fileId 160380 和 UI Info Suite 2 2.3.7/fileId 116310，且不再需要已知 Installation UUID。
+
+当前剩余的 M4 验收项只有：从 2697 的真实 Installation Record 冻结但不执行 Uninstall Plan。沙箱中的暖启动、第二 Mod 泛化和卸载闭环已经通过。
 
 每个里程碑完成后单独提交和验收。M4 通过后，V1 规划层代码才能正式标记为退役。

@@ -163,6 +163,42 @@ function assertBundleShape(value: unknown): asserts value is ModBundleManifest {
   }
 }
 
+export async function readVerifiedModBundleManifest(
+  bundlePath: string,
+): Promise<ModBundleManifest> {
+  if (!path.isAbsolute(bundlePath)) {
+    throw new NexusError(
+      "BUNDLE_INVALID",
+      "Mod Bundle path must be absolute.",
+    );
+  }
+  let bundle: ModBundleManifest;
+  try {
+    const parsed = JSON.parse(
+      await readFile(path.resolve(bundlePath), "utf8"),
+    ) as unknown;
+    assertBundleShape(parsed);
+    bundle = parsed;
+  } catch (error) {
+    if (error instanceof NexusError) throw error;
+    throw new NexusError(
+      "BUNDLE_INVALID",
+      "Mod Bundle Manifest is missing or unreadable.",
+      { cause: error, details: { bundlePath } },
+    );
+  }
+  if (
+    path.resolve(bundle.bundlePath) !== path.resolve(bundlePath) ||
+    sha256CanonicalJson(bundleHashPayload(bundle)) !== bundle.bundleHash
+  ) {
+    throw new NexusError(
+      "BUNDLE_INVALID",
+      "Mod Bundle path or content hash no longer matches.",
+    );
+  }
+  return bundle;
+}
+
 class DownloadPlanStore {
   readonly #root: string;
   readonly #defaultTtlMs: number;
@@ -585,36 +621,7 @@ export class DownloadBundleService {
   }
 
   async inspectBundle(bundlePath: string): Promise<ModBundleManifest> {
-    if (!path.isAbsolute(bundlePath)) {
-      throw new NexusError(
-        "BUNDLE_INVALID",
-        "Mod Bundle path must be absolute.",
-      );
-    }
-    let bundle: ModBundleManifest;
-    try {
-      const parsed = JSON.parse(
-        await readFile(path.resolve(bundlePath), "utf8"),
-      ) as unknown;
-      assertBundleShape(parsed);
-      bundle = parsed;
-    } catch (error) {
-      if (error instanceof NexusError) throw error;
-      throw new NexusError(
-        "BUNDLE_INVALID",
-        "Mod Bundle Manifest is missing or unreadable.",
-        { cause: error, details: { bundlePath } },
-      );
-    }
-    if (
-      path.resolve(bundle.bundlePath) !== path.resolve(bundlePath) ||
-      sha256CanonicalJson(bundleHashPayload(bundle)) !== bundle.bundleHash
-    ) {
-      throw new NexusError(
-        "BUNDLE_INVALID",
-        "Mod Bundle path or content hash no longer matches.",
-      );
-    }
+    const bundle = await readVerifiedModBundleManifest(bundlePath);
     await Promise.all(
       bundle.archives.map(async (archive) => {
         const receipt = await verifyExistingDownloadReceipt(

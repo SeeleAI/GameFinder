@@ -195,6 +195,7 @@ describe("Phase 6B-4 installation MCP", () => {
         "match_install_adapters",
         "plan_mod_install",
         "apply_mod_install",
+        "find_installed_nexus_mod",
         "get_install_status",
         "verify_mod_install",
         "rollback_mod_install",
@@ -318,6 +319,58 @@ describe("Phase 6B-4 installation MCP", () => {
       passed: true,
       staticVerification: { state: "passed" },
       runtimeVerification: { state: "not-run" },
+    });
+    await writeFile(
+      path.join(
+        fixture.gameRoot,
+        "Mods",
+        "SkipFishingMinigame",
+        "config.json",
+      ),
+      '{"generated":true}',
+    );
+
+    const found = await client.callTool({
+      name: "find_installed_nexus_mod",
+      arguments: {
+        modUrl: "https://www.nexusmods.com/stardewvalley/mods/2697",
+        gameRoot: fixture.gameRoot,
+        versionConstraint: "v0.7.0+",
+      },
+    });
+    expect(found.isError).not.toBe(true);
+    expect(found.structuredContent).toMatchObject({
+      ok: true,
+      counts: {
+        matches: 1,
+        satisfied: 1,
+        candidatesRequiringProbe: 0,
+        notSatisfied: 0,
+      },
+      matches: [
+        {
+          recordKind: "file_transaction",
+          installationId,
+          nexus: {
+            domainName: "stardewvalley",
+            modId: 2697,
+            fileId: 115145,
+          },
+          version: {
+            value: "0.7.4",
+            source: "package_manifest",
+          },
+          versionConstraint: { status: "satisfied" },
+          currentVerification: { status: "passed" },
+          dependencySatisfaction: {
+            status: "satisfied",
+            canMarkSatisfiedNode: true,
+          },
+          warnings: [
+            expect.stringContaining("runtime-generated or unmanaged extra"),
+          ],
+        },
+      ],
     });
   });
 

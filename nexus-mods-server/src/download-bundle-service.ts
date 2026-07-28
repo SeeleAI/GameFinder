@@ -199,7 +199,7 @@ export async function readVerifiedModBundleManifest(
   return bundle;
 }
 
-class DownloadPlanStore {
+export class DownloadPlanStore {
   readonly #root: string;
   readonly #defaultTtlMs: number;
 

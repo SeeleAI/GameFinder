@@ -346,6 +346,8 @@ Implemented:
 Not yet implemented:
 
 - resumable browser downloads;
-- Mod installation.
+- public Mod uninstall planning/apply tools. The internal transactional uninstall
+  engine remains available, and local Installation Dependency Snapshots are now
+  persisted as the prerequisite for dependent-aware uninstall blocking.
 
 Phase 5 PC-1 through PC-6 are complete. PC-3 passed against the real Nexus Mod through the production MCP chain; PC-4 passed with a real clean Profile; PC-5 uses deterministic controlled pages for conditions that should not be intentionally induced on Nexus. The existing native/NXM backend remains the default.

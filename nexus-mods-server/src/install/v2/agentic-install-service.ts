@@ -77,6 +77,10 @@ import {
   deriveLearnedMethod,
   instantiateLearnedMethod,
 } from "./method-learning.js";
+import {
+  InstallationDependencyService,
+  type InstallationDependencySnapshot,
+} from "./installation-dependency-store.js";
 
 interface ExplicitGameContextInput {
   gameRoot: string;
@@ -171,6 +175,11 @@ export interface AgenticMethodQueryResult {
 export interface MethodLearningResult {
   method: InstallationMethod | null;
   outcome: MethodOutcome | null;
+  warning: string | null;
+}
+
+export interface DependencySnapshotCaptureResult {
+  snapshot: InstallationDependencySnapshot | null;
   warning: string | null;
 }
 
@@ -438,6 +447,7 @@ export class AgenticInstallService {
   readonly #methods: MethodStore;
   readonly #v1PlanStore: PlanStore;
   readonly #v1ContextStore: PlanExecutionContextStore;
+  readonly #dependencies: InstallationDependencyService;
 
   private constructor(input: {
     managerRoot: string;
@@ -446,6 +456,7 @@ export class AgenticInstallService {
     methods: MethodStore;
     v1PlanStore: PlanStore;
     v1ContextStore: PlanExecutionContextStore;
+    dependencies: InstallationDependencyService;
   }) {
     this.#managerRoot = input.managerRoot;
     this.#legacy = input.legacy;
@@ -453,6 +464,7 @@ export class AgenticInstallService {
     this.#methods = input.methods;
     this.#v1PlanStore = input.v1PlanStore;
     this.#v1ContextStore = input.v1ContextStore;
+    this.#dependencies = input.dependencies;
   }
 
   static async create(input: {
@@ -465,6 +477,11 @@ export class AgenticInstallService {
       PlanStore.create({ managerRoot: input.managerRoot }),
       PlanExecutionContextStore.create(input.managerRoot),
     ]);
+    const dependencies = await InstallationDependencyService.create({
+      managerRoot: input.managerRoot,
+      legacy: input.legacy,
+      objects,
+    });
     return new AgenticInstallService({
       managerRoot: path.resolve(input.managerRoot),
       legacy: input.legacy,
@@ -472,7 +489,35 @@ export class AgenticInstallService {
       methods,
       v1PlanStore,
       v1ContextStore,
+      dependencies,
     });
+  }
+
+  async getInstallationDependencySnapshot(
+    installationId: string,
+  ): Promise<InstallationDependencySnapshot> {
+    return await this.#dependencies.get(installationId);
+  }
+
+  async listInstallationDependencySnapshots(): Promise<
+    ReadonlyArray<InstallationDependencySnapshot>
+  > {
+    return await this.#dependencies.list();
+  }
+
+  async findInstallationDependents(input: {
+    dependencyNodeId: string;
+    gameRoot?: string;
+  }): Promise<ReadonlyArray<InstallationDependencySnapshot>> {
+    return await this.#dependencies.findDependents(input);
+  }
+
+  async reconcileInstallationDependencies(): Promise<{
+    created: InstallationDependencySnapshot[];
+    unchangedInstallationIds: string[];
+    failures: Array<{ installationId: string; message: string }>;
+  }> {
+    return await this.#dependencies.reconcile();
   }
 
   async probeGameContext(
@@ -1794,6 +1839,7 @@ export class AgenticInstallService {
         bridgePlanId: string;
         applied: ApplyInstallResult;
         methodLearning: MethodLearningResult;
+        dependencySnapshot: DependencySnapshotCaptureResult;
       }
     | {
         executionKind: "installer";
@@ -1802,6 +1848,7 @@ export class AgenticInstallService {
         record: InstallerInstallationRecord;
         refreshedGameContext: DynamicGameContext | null;
         methodLearning: MethodLearningResult;
+        dependencySnapshot: DependencySnapshotCaptureResult;
       }
   > {
     const plan = await this.#objects.getPlan(planId);
@@ -1855,6 +1902,14 @@ export class AgenticInstallService {
           completedAt: new Date().toISOString(),
         });
       }
+      const dependencySnapshot =
+        record.state === "installed"
+          ? await this.#captureDependencySnapshot({
+              plan,
+              installationId: record.installationId,
+              recordKind: "controlled_installer",
+            })
+          : { snapshot: null, warning: null };
       const stagingManager = await StagingManager.create({
         managerRoot: this.#managerRoot,
         gameRoot: context.instance.gameRoot,
@@ -1878,6 +1933,7 @@ export class AgenticInstallService {
         record,
         refreshedGameContext,
         methodLearning,
+        dependencySnapshot,
       };
     }
     const bridge = await this.#objects.getBridge(planId);
@@ -1912,6 +1968,11 @@ export class AgenticInstallService {
         completedAt: new Date().toISOString(),
       });
     }
+    const dependencySnapshot = await this.#captureDependencySnapshot({
+      plan,
+      installationId: applied.record.installationId,
+      recordKind: "file_transaction",
+    });
     const methodLearning = await this.#recordSuccessfulMethod({
       plan,
       installationId: applied.record.installationId,
@@ -1931,7 +1992,28 @@ export class AgenticInstallService {
       bridgePlanId: bridge.v1PlanId,
       applied,
       methodLearning,
+      dependencySnapshot,
     };
+  }
+
+  async #captureDependencySnapshot(input: {
+    plan: InstallPlanV2;
+    installationId: string;
+    recordKind: "file_transaction" | "controlled_installer";
+  }): Promise<DependencySnapshotCaptureResult> {
+    try {
+      return {
+        snapshot: await this.#dependencies.capture(input),
+        warning: null,
+      };
+    } catch (error) {
+      return {
+        snapshot: null,
+        warning: `Installation committed, but its Dependency Snapshot could not be persisted: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
   }
 
   async #recordSuccessfulMethod(input: {

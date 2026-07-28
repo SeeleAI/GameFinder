@@ -1001,4 +1001,41 @@ M2 独立 Session 收尾修正（2026-07-27）：
 
 当前剩余的 M4 验收项只有：从 2697 的真实 Installation Record 冻结但不执行 Uninstall Plan。沙箱中的暖启动、第二 Mod 泛化和卸载闭环已经通过。
 
+### M4 收尾：Installation Dependency Snapshot（2026-07-28）
+
+卸载规划前新增统一的本地依赖事实层。该层不修改现有文件事务
+Installation Record 或受控安装器 Installation Record，而是为两类记录保存同一格式的
+`Installation Dependency Snapshot`：
+
+- 以 dependent Installation ID 为主键，采用不可变 revision 和 current pointer；
+- 保存 dependent 的 Nexus node、record kind、game root 和 Dynamic Game Context；
+- 保存每个 required dependency 的 Nexus node、直接或传递关系、版本约束，以及已解析到的本地 dependency Installation ID；
+- 绑定 Evidence Pack、Bundle Manifest 与 frozen Download Plan 的 ID 和 hash；
+- 使用 canonical JSON hash 校验每个 Snapshot；
+- 标记 `complete` 或 `partial`，禁止把缺少 dependency-aware Bundle 的单 Archive 安装解释为“确定没有依赖”。
+
+依赖边统一采用 `dependent -> dependency` 方向。未来 Uninstall Planner 对目标节点执行反向
+dependent 查询；只要同一 game root 中仍有活动 Installation Snapshot 要求目标节点，就必须
+拒绝卸载。卸载检查只读取冻结的本地事实，不在危险操作前临时查询 Nexus。
+
+新增内部/本地 MCP 能力：
+
+- `get_installation_dependency_snapshot(installationId)`：读取并校验快照，同时返回要求该节点的 dependent；
+- `reconcile_installation_dependencies()`：从历史 Bundle Completion、V2 Plan、Evidence、
+  Bundle Manifest 与 Download Plan 回填缺失快照；只写 Manager metadata，不改游戏；
+- 每次新的 `apply_agentic_install_plan` 成功提交后自动捕获 Snapshot。若捕获失败，安装结果保持
+  committed，但返回独立 warning，不能静默丢失卸载前置事实。
+
+`prepare_install_evidence` 也改为从 frozen Download Plan 的真实 edge closure 生成 dependencies，
+不再仅使用 Bundle `installOrder` 的前缀。因此通过 `satisfiedNodeIds` 复用的 SMAPI 等依赖仍会进入
+Evidence 和后续 Snapshot。
+
+定向测试覆盖：
+
+- 直接与传递依赖闭包；
+- Snapshot hash、不可变 revision、current pointer 与反向 dependent 查询；
+- 单 Archive 的 partial Snapshot；
+- MCP 工具发布；
+- 原有 Contract V1/V2、下载、受控安装器和学习复用回归。
+
 每个里程碑完成后单独提交和验收。M4 通过后，V1 规划层代码才能正式标记为退役。

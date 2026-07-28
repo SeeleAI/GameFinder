@@ -196,6 +196,8 @@ describe("Phase 6B-4 installation MCP", () => {
         "plan_mod_install",
         "apply_mod_install",
         "find_installed_nexus_mod",
+        "get_installation_dependency_snapshot",
+        "reconcile_installation_dependencies",
         "get_install_status",
         "verify_mod_install",
         "rollback_mod_install",

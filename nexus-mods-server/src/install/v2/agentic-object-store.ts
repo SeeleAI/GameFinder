@@ -418,6 +418,32 @@ export class AgenticObjectStore {
     );
   }
 
+  async listAllBundleNodeCompletions(): Promise<
+    ReadonlyArray<BundleNodeCompletion>
+  > {
+    const completions: BundleNodeCompletion[] = [];
+    for (const name of await readdir(this.#bundleCompletionRoot)) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        completions.push(
+          bundleNodeCompletionSchema.parse(
+            JSON.parse(
+              await readFile(
+                path.join(this.#bundleCompletionRoot, name),
+                "utf8",
+              ),
+            ) as unknown,
+          ),
+        );
+      } catch {
+        // Corrupt completion objects remain isolated from valid records.
+      }
+    }
+    return completions.sort((left, right) =>
+      left.completedAt.localeCompare(right.completedAt),
+    );
+  }
+
   #path(root: string, id: string): string {
     assertUuid(id, "Object id");
     return path.join(root, `${id}.json`);

@@ -222,6 +222,28 @@ describe("Phase 6B V2 M4 learned Method reuse", () => {
     if (coldResult.executionKind !== "file") {
       throw new Error("Expected file-tree execution.");
     }
+    expect(coldResult.dependencySnapshot).toMatchObject({
+      warning: null,
+      snapshot: {
+        installationId: coldResult.applied.record.installationId,
+        dependent: {
+          nexus: {
+            nodeId: "nexus:stardewvalley:2697",
+          },
+        },
+        dependencies: [
+          {
+            nodeId: "Pathoschild.SMAPI",
+            kind: "external_requirement",
+            required: true,
+            relation: "direct",
+          },
+        ],
+        completeness: {
+          state: "partial",
+        },
+      },
+    });
     const learned = coldResult.methodLearning.method;
     if (!learned) throw new Error("Expected a learned SMAPI folder Method.");
     expect(learned).toMatchObject({

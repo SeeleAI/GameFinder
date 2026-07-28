@@ -14,6 +14,7 @@ import {
 import { LocalInstallationQueryService } from "./install/local-installation-query.js";
 import {
   AgenticInstallService,
+  collectDependencyClosure,
   installProposalDraftSchema
 } from "./install/v2/index.js";
 import { NexusClient } from "./nexus-client.js";
@@ -583,6 +584,85 @@ export function createNexusMcpServer(
   );
 
   server.registerTool(
+    "get_installation_dependency_snapshot",
+    {
+      title: "Get one local Installation Dependency Snapshot",
+      description:
+        "Read and hash-verify the frozen dependency facts for one successful Installation Record. Also returns active snapshots which require this installation's Nexus node. Does not contact Nexus or modify the game.",
+      inputSchema: {
+        installationId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ installationId }) =>
+      safe(async () => {
+        const service = await agenticInstalls();
+        const snapshot = await service.getInstallationDependencySnapshot(
+          installationId
+        );
+        const requiredBy = await service.findInstallationDependents({
+          dependencyNodeId: snapshot.dependent.nexus.nodeId,
+          gameRoot: snapshot.dependent.game.gameRoot
+        });
+        return ok(
+          `Installation ${installationId} has ${snapshot.dependencies.length} frozen dependencies and is required by ${requiredBy.length} local installation snapshots.`,
+          {
+            ok: true,
+            snapshot,
+            requiredBy: requiredBy.map((dependent) => ({
+              installationId: dependent.installationId,
+              recordKind: dependent.dependent.recordKind,
+              nexus: dependent.dependent.nexus,
+              dependency: dependent.dependencies.find(
+                (candidate) =>
+                  candidate.nodeId.toLowerCase() ===
+                  snapshot.dependent.nexus.nodeId.toLowerCase()
+              )
+            })),
+            meta: meta("local", null)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "reconcile_installation_dependencies",
+    {
+      title: "Backfill local Installation Dependency Snapshots",
+      description:
+        "Create missing dependency snapshots for successful Contract V2 Bundle installations from immutable Bundle Completion, Evidence, Bundle Manifest, and Download Plan records. Writes manager metadata only and never modifies a game.",
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async () =>
+      safe(async () => {
+        const result = await (
+          await agenticInstalls()
+        ).reconcileInstallationDependencies();
+        return ok(
+          `Created ${result.created.length} Installation Dependency Snapshots; ${result.unchangedInstallationIds.length} already existed and ${result.failures.length} could not be reconciled.`,
+          {
+            ok: result.failures.length === 0,
+            ...result,
+            meta: meta(
+              "local",
+              null,
+              result.failures.map(
+                (failure) =>
+                  `${failure.installationId}: ${failure.message}`
+              )
+            )
+          }
+        );
+      })
+  );
+
+  server.registerTool(
     "plan_mod_download",
     {
       title: "Plan a dependency-aware Mod download",
@@ -1090,7 +1170,11 @@ export function createNexusMcpServer(
         let dependencies:
           | Array<{
               nodeId: string;
-              kind: "nexus_mod" | "loader_runtime";
+              kind:
+                | "nexus_mod"
+                | "loader_runtime"
+                | "manual_requirement"
+                | "external_requirement";
               required: boolean;
               satisfied: boolean;
               evidence: string[];
@@ -1108,7 +1192,8 @@ export function createNexusMcpServer(
               "Provide either archivePath+receiptPath or bundlePath+bundleNodeId, never a partial or mixed input."
             );
           }
-          const manifest = await (await downloadBundles()).inspectBundle(bundlePath);
+          const bundleService = await downloadBundles();
+          const manifest = await bundleService.inspectBundle(bundlePath);
           const archive = manifest.archives.find(
             (candidate) => candidate.nodeId === bundleNodeId
           );
@@ -1132,22 +1217,28 @@ export function createNexusMcpServer(
             ...manifest.satisfiedNodeIds,
             ...(await agentic.getSatisfiedBundleNodeIds(manifest.bundleId))
           ]);
-          dependencies = manifest.installOrder
-            .slice(0, installOrderIndex)
-            .map((nodeId) => {
-              const dependencyArchive = manifest.archives.find(
-                (candidate) => candidate.nodeId === nodeId
-              );
+          const sourcePlan = await bundleService.getPlan(manifest.sourcePlanId);
+          if (sourcePlan.planHash !== manifest.sourcePlanHash) {
+            throw new NexusError(
+              "DOWNLOAD_PLAN_STALE",
+              "The Bundle Manifest no longer matches its frozen source Download Plan."
+            );
+          }
+          dependencies = collectDependencyClosure(
+            sourcePlan.dependencyResolution,
+            bundleNodeId
+          ).map(({ node, relation }) => {
               return {
-                nodeId,
+                nodeId: node.nodeId,
                 kind:
-                  dependencyArchive?.kind === "loader_runtime"
-                    ? ("loader_runtime" as const)
-                    : ("nexus_mod" as const),
-                required: true,
-                satisfied: satisfied.has(nodeId),
+                  node.kind === "dlc"
+                    ? ("manual_requirement" as const)
+                    : node.kind,
+                required: node.required,
+                satisfied: satisfied.has(node.nodeId),
                 evidence: [
-                  `Bundle ${manifest.bundleId} installOrder requires this node before ${bundleNodeId}.`
+                  ...node.evidence,
+                  `Frozen Download Plan ${sourcePlan.planId} records this ${relation} dependency of ${bundleNodeId}.`
                 ]
               };
             });
@@ -1450,6 +1541,7 @@ export function createNexusMcpServer(
               executionKind: result.executionKind,
               installation: result.record,
               methodLearning: result.methodLearning,
+              dependencySnapshot: result.dependencySnapshot,
               refreshedGameContext: result.refreshedGameContext,
               meta: meta("local", null, [
                 result.record.verification.static === "passed"
@@ -1481,6 +1573,7 @@ export function createNexusMcpServer(
               runtimeVerification: applied.record.runtimeVerification
             },
             methodLearning: result.methodLearning,
+            dependencySnapshot: result.dependencySnapshot,
             meta: meta("local", null, [
               "Static verification passed; runtime verification has not run."
             ])

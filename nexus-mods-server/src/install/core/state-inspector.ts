@@ -135,6 +135,111 @@ function currentOwner(
   );
 }
 
+function relativeManagedChild(
+  parentRelativePath: string,
+  candidateRelativePath: string,
+): string | null {
+  const parent = normalizeManagedRelativePath(parentRelativePath);
+  const candidate = normalizeManagedRelativePath(candidateRelativePath);
+  const prefix = `${parent.toLowerCase()}/`;
+  if (!candidate.toLowerCase().startsWith(prefix)) return null;
+  return candidate.slice(parent.length + 1);
+}
+
+function addDirectoryAncestors(
+  directories: Set<string>,
+  relativePath: string,
+): void {
+  const segments = relativePath.split("/");
+  for (let index = 1; index < segments.length; index += 1) {
+    directories.add(segments.slice(0, index).join("/").toLowerCase());
+  }
+}
+
+function managedDescendants(
+  record: InstallationRecord,
+  directoryOutcome: OperationOutcome,
+): { files: Set<string>; directories: Set<string> } {
+  const files = new Set<string>();
+  const directories = new Set<string>();
+
+  for (const outcome of record.operationOutcomes) {
+    if (outcome.outcome !== "applied" || outcome === directoryOutcome) {
+      continue;
+    }
+    const outcomeRoot = relativeManagedChild(
+      directoryOutcome.targetRelativePath,
+      outcome.targetRelativePath,
+    );
+    if (outcomeRoot === null) continue;
+
+    switch (outcome.operationKind) {
+      case "install_new_file":
+      case "replace_file":
+        files.add(outcomeRoot.toLowerCase());
+        addDirectoryAncestors(directories, outcomeRoot);
+        break;
+      case "ensure_directory":
+        directories.add(outcomeRoot.toLowerCase());
+        addDirectoryAncestors(directories, outcomeRoot);
+        break;
+      case "install_tree":
+      case "replace_managed_tree":
+        directories.add(outcomeRoot.toLowerCase());
+        addDirectoryAncestors(directories, outcomeRoot);
+        for (const file of outcome.ownedFiles) {
+          const relativePath = path.posix.join(outcomeRoot, file.relativePath);
+          files.add(relativePath.toLowerCase());
+          addDirectoryAncestors(directories, relativePath);
+        }
+        for (const directory of outcome.ownedDirectories) {
+          const relativePath = path.posix.join(outcomeRoot, directory);
+          directories.add(relativePath.toLowerCase());
+          addDirectoryAncestors(directories, relativePath);
+        }
+        break;
+      case "remove_empty_directory":
+        break;
+      default: {
+        const exhaustive: never = outcome.operationKind;
+        return exhaustive;
+      }
+    }
+  }
+
+  return { files, directories };
+}
+
+async function classifyCreatedDirectoryOutcome(
+  record: InstallationRecord,
+  outcome: OperationOutcome,
+  targetAbsolutePath: string,
+): Promise<{
+  state: "unchanged" | "unmanaged_extra";
+  unmanagedFilePaths: string[];
+  unmanagedDirectoryPaths: string[];
+}> {
+  const tree = await inspectDirectoryTree(targetAbsolutePath);
+  const managed = managedDescendants(record, outcome);
+  const unmanagedFilePaths = tree.files
+    .filter((file) => !managed.files.has(file.relativePath.toLowerCase()))
+    .map((file) => file.relativePath);
+  const unmanagedDirectoryPaths = tree.directories
+    .filter(
+      (directory) =>
+        !managed.directories.has(directory.relativePath.toLowerCase()),
+    )
+    .map((directory) => directory.relativePath);
+  return {
+    state:
+      unmanagedFilePaths.length > 0 || unmanagedDirectoryPaths.length > 0
+        ? "unmanaged_extra"
+        : "unchanged",
+    unmanagedFilePaths,
+    unmanagedDirectoryPaths,
+  };
+}
+
 export async function inspectInstallationState(input: {
   record: InstallationRecord;
   profile: GameProfile;
@@ -197,7 +302,27 @@ export async function inspectInstallationState(input: {
       outcome.operationKind === "ensure_directory" &&
       actualState.kind === "directory"
     ) {
-      state = "unchanged";
+      if (outcome.preState.kind === "absent") {
+        const classified = await classifyCreatedDirectoryOutcome(
+          input.record,
+          outcome,
+          targetAbsolutePath,
+        );
+        state = classified.state;
+        unmanagedFilePaths = classified.unmanagedFilePaths.map((child) =>
+          normalizeManagedRelativePath(
+            path.posix.join(targetRelativePath, child),
+          ),
+        );
+        unmanagedDirectoryPaths = classified.unmanagedDirectoryPaths.map(
+          (child) =>
+            normalizeManagedRelativePath(
+              path.posix.join(targetRelativePath, child),
+            ),
+        );
+      } else {
+        state = "unchanged";
+      }
     } else if (outcome.postState.kind === "directory") {
       const classified = await classifyTreeOutcome(
         outcome,

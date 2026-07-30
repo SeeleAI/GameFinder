@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import {
   mkdtemp,
@@ -501,6 +502,87 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
         () => null,
       ),
     ).toBeNull();
+  });
+
+  it("discloses generated files inside a root-overlay created directory before approval", async () => {
+    const fixture = await createTransactionFixture();
+    const installed = await applyFixture(fixture);
+    const treeOutcome = installed.record.operationOutcomes[0];
+    if (treeOutcome?.operationKind !== "install_tree") {
+      throw new Error("Expected the fixture to install one managed tree.");
+    }
+    const rootOverlayRecord = {
+      ...installed.record,
+      operationOutcomes: [
+        {
+          operationId: randomUUID(),
+          operationKind: "ensure_directory" as const,
+          targetRelativePath: "Mods/SkipFishingMinigame",
+          outcome: "applied" as const,
+          preState: { kind: "absent" as const },
+          postState: {
+            kind: "directory" as const,
+            treeHash: null,
+            entries: 0,
+          },
+          ownershipMode: "none" as const,
+          ownedFiles: [],
+          ownedDirectories: [],
+          backupId: null,
+          previousOwnerInstallationId: null,
+        },
+        ...treeOutcome.ownedFiles.map((file) => ({
+          operationId: randomUUID(),
+          operationKind: "install_new_file" as const,
+          targetRelativePath: path.posix.join(
+            "Mods/SkipFishingMinigame",
+            file.relativePath,
+          ),
+          outcome: "applied" as const,
+          preState: { kind: "absent" as const },
+          postState: {
+            kind: "file" as const,
+            bytes: file.bytes,
+            sha256: file.sha256,
+          },
+          ownershipMode: "installed_file_set" as const,
+          ownedFiles: [],
+          ownedDirectories: [],
+          backupId: null,
+          previousOwnerInstallationId: null,
+        })),
+      ],
+    };
+    await writeFile(path.join(fixture.targetRoot, "log.txt"), "runtime log");
+
+    const inspection = await inspectInstallationState({
+      record: rootOverlayRecord,
+      profile: STARDEW_VALLEY_PROFILE,
+      instance: fixture.instance,
+    });
+    expect(inspection.blocking).toBe(false);
+    expect(inspection.paths[0]).toMatchObject({
+      targetRelativePath: "Mods/SkipFishingMinigame",
+      state: "unmanaged_extra",
+      unmanagedFilePaths: ["Mods/SkipFishingMinigame/log.txt"],
+      unmanagedDirectoryPaths: [],
+    });
+
+    const uninstallPlanStore = await UninstallPlanStore.create({
+      managerRoot: fixture.managerRoot,
+    });
+    const planned = await planModUninstall({
+      record: rootOverlayRecord,
+      profile: STARDEW_VALLEY_PROFILE,
+      instance: fixture.instance,
+      planStore: uninstallPlanStore,
+    });
+    expect(planned.plan.retainedPaths).toEqual([
+      "Mods/SkipFishingMinigame",
+    ]);
+    expect(planned.plan.retainedFilePaths).toEqual([
+      "Mods/SkipFishingMinigame/log.txt",
+    ]);
   });
 
   it("treats generated files beside an exclusive install_tree as retained unmanaged data", async () => {

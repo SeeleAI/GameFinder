@@ -18,6 +18,7 @@ import type { DownloadReceipt } from "../src/download-verifier.js";
 import {
   AgenticInstallService,
   InstallService,
+  InstallationDependencyStore,
   MethodStore,
   sha256File,
 } from "../src/install/index.js";
@@ -348,7 +349,96 @@ describe("Phase 6B V2 M4 learned Method reuse", () => {
       ]),
     );
 
-    const uninstall = await warmLegacy.planUninstall(
+    const planCreatedBeforeDependent = await warm.planUninstall(
+      coldResult.applied.record.installationId,
+    );
+    const dependencyStore =
+      await InstallationDependencyStore.create(managerRoot);
+    await dependencyStore.save({
+      schemaVersion: 2,
+      installationId: warmResult.applied.record.installationId,
+      dependent: {
+        recordKind: "file_transaction",
+        nexus: {
+          nodeId: "nexus:stardewvalley:9999",
+          domainName: "stardewvalley",
+          modId: 9999,
+          canonicalModUrl:
+            "https://www.nexusmods.com/stardewvalley/mods/9999",
+        },
+        game: {
+          gameRoot,
+          gameContextId: warmContext.gameContextId,
+        },
+      },
+      dependencies: [
+        {
+          nodeId: "nexus:stardewvalley:2697",
+          kind: "nexus_mod",
+          required: true,
+          relation: "direct",
+          nexus: {
+            nodeId: "nexus:stardewvalley:2697",
+            domainName: "stardewvalley",
+            modId: 2697,
+            canonicalModUrl:
+              "https://www.nexusmods.com/stardewvalley/mods/2697",
+          },
+          versionConstraint: null,
+          dependencyInstallationId:
+            coldResult.applied.record.installationId,
+          evidence: ["Fixture active dependent relationship."],
+        },
+      ],
+      completeness: { state: "complete", reasons: [] },
+      provenance: {
+        evidencePackId: warmEvidence.evidencePackId,
+        evidencePackHash: warmEvidence.evidencePackHash,
+        bundle: null,
+        downloadPlan: null,
+      },
+    });
+
+    const blockedInspection = await warm.inspectUninstall(
+      coldResult.applied.record.installationId,
+    );
+    expect(blockedInspection).toMatchObject({
+      eligible: false,
+      activeDependents: [
+        {
+          installationId: warmResult.applied.record.installationId,
+          nexus: { nodeId: "nexus:stardewvalley:9999" },
+        },
+      ],
+      blockers: [
+        expect.objectContaining({ code: "DEPENDENTS_EXIST" }),
+      ],
+    });
+    await expect(
+      warm.planUninstall(coldResult.applied.record.installationId),
+    ).rejects.toMatchObject({
+      code: "DEPENDENTS_EXIST",
+      details: {
+        dependencyNodeId: "nexus:stardewvalley:2697",
+        activeDependents: [
+          expect.objectContaining({
+            installationId: warmResult.applied.record.installationId,
+          }),
+        ],
+      },
+    });
+    await expect(
+      warm.applyUninstall(
+        planCreatedBeforeDependent.plan.uninstallPlanId,
+      ),
+    ).rejects.toMatchObject({
+      code: "DEPENDENTS_EXIST",
+    });
+    expect(
+      await stat(path.join(gameRoot, "Mods", "FirstMod", "manifest.json")),
+    ).toBeTruthy();
+
+    const uninstall = await warm.planUninstall(
       warmResult.applied.record.installationId,
     );
     expect(uninstall.plan).toMatchObject({
@@ -372,12 +462,19 @@ describe("Phase 6B V2 M4 learned Method reuse", () => {
         }),
       ]),
     );
-    const uninstalled = await warmLegacy.applyUninstall(
+    const uninstalled = await warm.applyUninstall(
       uninstall.plan.uninstallPlanId,
     );
     expect(uninstalled.record.state).toBe("uninstalled");
     expect(
       await stat(path.join(gameRoot, "Mods", "SecondMod")).catch(() => null),
     ).toBeNull();
+    await expect(
+      warm.inspectUninstall(coldResult.applied.record.installationId),
+    ).resolves.toMatchObject({
+      eligible: true,
+      activeDependents: [],
+      blockers: [],
+    });
   });
 });

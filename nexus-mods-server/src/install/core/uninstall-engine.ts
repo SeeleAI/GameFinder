@@ -17,11 +17,14 @@ import type { InstallationRecordStore } from "../storage/installation-record-sto
 import type { TransactionJournalStore } from "../storage/transaction-journal-store.js";
 import type { TransactionJournalWriter } from "../storage/transaction-journal-store.js";
 import type { UninstallPlanStore } from "../storage/uninstall-plan-store.js";
-import { resolveManagedTarget } from "../path-policy.js";
+import {
+  normalizeManagedRelativePath,
+  resolveManagedTarget,
+} from "../path-policy.js";
 import { InstanceLock } from "./instance-lock.js";
 import { assertSensitiveProcessesStopped } from "./process-guard.js";
 import { inspectInstallationState } from "./state-inspector.js";
-import { inspectPathState } from "./tree-state.js";
+import { inspectDirectoryTree, inspectPathState } from "./tree-state.js";
 import type {
   TransactionFaultInjector,
   TransactionCheckpoint,
@@ -39,6 +42,7 @@ export interface ApplyUninstallResult {
   transactionId: string;
   record: InstallationRecord;
   retainedPaths: ReadonlyArray<string>;
+  retainedFilePaths: ReadonlyArray<string>;
 }
 
 function stateEquals(left: PathState, right: PathState): boolean {
@@ -51,6 +55,39 @@ function stateEquals(left: PathState, right: PathState): boolean {
     return left.treeHash === right.treeHash;
   }
   return false;
+}
+
+async function collectRetainedFilePaths(input: {
+  retainedPaths: ReadonlyArray<string>;
+  profile: GameProfile;
+  instance: GameInstance;
+}): Promise<string[]> {
+  const retainedFilePaths: string[] = [];
+  for (const retainedPath of input.retainedPaths) {
+    const target = resolveManagedTarget({
+      gameRoot: input.instance.gameRoot,
+      targetRelativePath: retainedPath,
+      writableRoots: input.profile.filesystem.writableRoots,
+      protectedRoots: input.profile.filesystem.protectedRoots,
+    });
+    const state = await inspectPathState(target.targetAbsolutePath);
+    if (state.kind === "file") {
+      retainedFilePaths.push(target.targetRelativePath);
+      continue;
+    }
+    if (state.kind !== "directory") continue;
+    const tree = await inspectDirectoryTree(target.targetAbsolutePath);
+    retainedFilePaths.push(
+      ...tree.files.map((file) =>
+        normalizeManagedRelativePath(
+          path.posix.join(target.targetRelativePath, file.relativePath),
+        ),
+      ),
+    );
+  }
+  return [...new Set(retainedFilePaths)].sort((left, right) =>
+    left.localeCompare(right),
+  );
 }
 
 function rollbackBackupForAction(
@@ -366,6 +403,11 @@ export class UninstallEngine {
             .map((result) => result.action.targetRelativePath),
         ]),
       ];
+      const retainedFilePaths = await collectRetainedFilePaths({
+        retainedPaths,
+        profile: input.profile,
+        instance: input.instance,
+      });
       const now = new Date().toISOString();
       const updated: InstallationRecord = {
         ...record,
@@ -389,7 +431,12 @@ export class UninstallEngine {
         message: `Committed Installation Record revision ${updated.revision}.`,
       });
       await writer.setState("uninstalled", { completed: true });
-      return { transactionId, record: updated, retainedPaths };
+      return {
+        transactionId,
+        record: updated,
+        retainedPaths,
+        retainedFilePaths,
+      };
     } catch (error) {
       if (error instanceof SimulatedTransactionInterruption) throw error;
       if (recordSaved) {

@@ -1014,9 +1014,10 @@ Installation Record 或受控安装器 Installation Record，而是为两类记�
 - 使用 canonical JSON hash 校验每个 Snapshot；
 - 标记 `complete` 或 `partial`，禁止把缺少 dependency-aware Bundle 的单 Archive 安装解释为“确定没有依赖”。
 
-依赖边统一采用 `dependent -> dependency` 方向。未来 Uninstall Planner 对目标节点执行反向
+依赖边统一采用 `dependent -> dependency` 方向。Uninstall Planner 的正式入口对目标节点执行反向
 dependent 查询；只要同一 game root 中仍有活动 Installation Snapshot 要求目标节点，就必须
-拒绝卸载。卸载检查只读取冻结的本地事实，不在危险操作前临时查询 Nexus。
+拒绝卸载。规划和执行两个时点都会重新检查，避免 Plan 审批期间新增 dependent 后仍被执行。
+卸载检查只读取冻结的本地事实，不在危险操作前临时查询 Nexus。
 
 新增内部/本地 MCP 能力：
 
@@ -1025,6 +1026,34 @@ dependent 查询；只要同一 game root 中仍有活动 Installation Snapshot 
   Bundle Manifest 与 Download Plan 回填缺失快照；只写 Manager metadata，不改游戏；
 - 每次新的 `apply_agentic_install_plan` 成功提交后自动捕获 Snapshot。若捕获失败，安装结果保持
   committed，但返回独立 warning，不能静默丢失卸载前置事实。
+
+### M4 收尾：正式卸载入口与 Skill（2026-07-29）
+
+普通文件事务型 Mod 的卸载闭环已从内部引擎提升为正式 MCP 工作流：
+
+- `inspect_mod_uninstall(installationId)`：检查当前文件状态、活动 dependents 与阻塞原因；
+- `plan_mod_uninstall(installationId)`：重新检查后冻结不可变 Uninstall Plan，不修改游戏；
+- `get_mod_uninstall_plan(uninstallPlanId)`：读取精确动作、retained paths、revision、hash 与 expiry；
+- `apply_mod_uninstall(uninstallPlanId)`：仅接受已展示的 Plan ID，并在执行前再次检查 dependents；
+- `verify_mod_uninstall(installationId)`：验证 Record 终态、owned files 删除结果和 backup 恢复结果。
+
+独立 `uninstall-game-mods` Skill 固定为
+resolve Installation ID → inspect → plan → read exact Plan → explicit approval → apply → verify。
+Skill 不处理手工安装、Vortex/untracked Mod、受控安装器、Loader/runtime 或级联卸载，也禁止使用
+shell 删除绕过事务引擎。
+
+真实 2697 运行后会在原两文件 `exclusive_tree` 中生成 `config.json`。State Inspector 现按
+`install_tree` 的实际 owned file set 逐项核验：owned file 未变化而仅出现额外文件时归类为
+`unmanaged_extra` 并保留；owned DLL/manifest 的缺失或修改仍按原规则报告并在需要时阻塞。
+
+真实卸载复盘后补充两项状态契约：
+
+- Uninstall Plan 保持不可变，原 `status: planned` 明确定义为创建状态；当前生命周期由 TTL、
+  Installation Record 与最新匹配 Transaction Journal 派生为
+  `planned/stale/applying/committed/failed/recovery_required`，不会因重写 Plan 而破坏 hash；
+- State Inspection、Uninstall Plan、apply result 与 verify result 均返回精确
+  `retainedFilePaths`。父目录仍通过 `retainedPaths` 报告，运行时生成的 `config.json` 等文件
+  不再只显示为一个模糊目录。
 
 `prepare_install_evidence` 也改为从 frozen Download Plan 的真实 edge closure 生成 dependencies，
 不再仅使用 Bundle `installOrder` 的前缀。因此通过 `satisfiedNodeIds` 复用的 SMAPI 等依赖仍会进入

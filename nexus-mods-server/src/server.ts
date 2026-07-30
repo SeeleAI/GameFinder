@@ -125,7 +125,13 @@ function installErrorNextAction(code: string): string | null {
     USER_CHOICE_REQUIRED:
       "Resolve every reported choice with the user, then submit a new Proposal with no unresolved choices.",
     OPERATION_CAPABILITY_MISSING:
-      "This MCP build cannot safely execute the proposed operation yet; preserve the evidence and stop before modifying the game."
+      "This MCP build cannot safely execute the proposed operation yet; preserve the evidence and stop before modifying the game.",
+    DEPENDENTS_EXIST:
+      "Keep the dependency installed. Uninstall or migrate every reported active dependent first, then inspect and generate a fresh Uninstall Plan.",
+    INSTALLATION_DIRTY:
+      "Stop before uninstall. Review the reported modified, protected, or replaced managed paths; do not force-delete them.",
+    UNINSTALL_BLOCKED:
+      "Inspect the Installation Record and Uninstall Plan state. Do not substitute rollback_mod_install or manual deletion."
   };
   return actions[code] ?? null;
 }
@@ -194,7 +200,7 @@ export function createNexusMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, and bounded local installation. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact plan review, explicit approval, and apply_agentic_install_plan(planId). Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and approval. Never replace MCP installation tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, bounded local installation, and managed file-Mod uninstall. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact plan review, explicit approval, and apply_agentic_install_plan(planId). Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and approval. For uninstall, call inspect_mod_uninstall, stop on any blocker, freeze with plan_mod_uninstall, show the exact stored plan with get_mod_uninstall_plan, and call apply_mod_uninstall only after explicit approval of that uninstallPlanId. Re-run verify_mod_uninstall after apply. Active required dependents always block both planning and apply. Never replace MCP installation or uninstall tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall."
     }
   );
 
@@ -1953,6 +1959,206 @@ export function createNexusMcpServer(
                 ? ["Runtime verification has not run; do not claim the Mod loaded successfully in game."]
                 : [])
             ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "inspect_mod_uninstall",
+    {
+      title: "Inspect one managed Mod for safe uninstall",
+      description:
+        "Inspect a file-transaction Installation Record, its current managed paths, and active reverse dependencies in the same game root. Returns blockers without creating an Uninstall Plan or changing the game.",
+      inputSchema: {
+        installationId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ installationId }) =>
+      safe(async () => {
+        const inspection = await (
+          await agenticInstalls()
+        ).inspectUninstall(installationId);
+        return ok(
+          inspection.eligible
+            ? `Installation ${installationId} is eligible for Uninstall Plan generation.`
+            : `Installation ${installationId} has ${inspection.blockers.length} uninstall blocker(s).`,
+          {
+            ok: true,
+            inspection,
+            meta: meta("local", null, [
+              "Eligibility is a current-state inspection, not approval to uninstall.",
+              "Active required dependents must be removed or migrated before this target can be uninstalled."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "plan_mod_uninstall",
+    {
+      title: "Freeze a managed Mod Uninstall Plan",
+      description:
+        "Recheck active dependents and current managed paths, then freeze a separate immutable Uninstall Plan. Writes manager plan metadata only; it does not modify the game. Review the exact stored plan before approval.",
+      inputSchema: {
+        installationId: z.string().uuid()
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ installationId }) =>
+      safe(async () => {
+        const planned = await (
+          await agenticInstalls()
+        ).planUninstall(installationId);
+        const lifecycle = await (
+          await agenticInstalls()
+        ).getUninstallPlanLifecycle(planned.plan.uninstallPlanId);
+        return ok(
+          `Frozen Uninstall Plan ${planned.plan.uninstallPlanId}; explicit approval is required before apply.`,
+          {
+            ok: true,
+            plan: planned.plan,
+            lifecycle: lifecycle.lifecycle,
+            inspection: planned.inspection,
+            approval: {
+              required: true,
+              approved: false,
+              applyTool: "apply_mod_uninstall",
+              uninstallPlanId: planned.plan.uninstallPlanId
+            },
+            meta: meta("local", null, [
+              "Show every action and retained path to the user before requesting approval.",
+              "Approval applies only to this exact uninstallPlanId."
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "get_mod_uninstall_plan",
+    {
+      title: "Get one exact managed Mod Uninstall Plan",
+      description:
+        "Read one stored Uninstall Plan by UUID, including its immutable creation status, derived current lifecycle, installation revision, inspection hash, exact actions, retained paths, and expiry. Does not modify the game.",
+      inputSchema: {
+        uninstallPlanId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ uninstallPlanId }) =>
+      safe(async () => {
+        const result = await (
+          await agenticInstalls()
+        ).getUninstallPlanLifecycle(uninstallPlanId);
+        return ok(
+          `Retrieved Uninstall Plan ${uninstallPlanId}; lifecycle is ${result.lifecycle.state}.`,
+          {
+          ok: true,
+          plan: result.plan,
+          lifecycle: result.lifecycle,
+          approval: {
+            required: result.lifecycle.state === "planned",
+            applyTool: "apply_mod_uninstall",
+            uninstallPlanId
+          },
+          meta: meta("local", null)
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "apply_mod_uninstall",
+    {
+      title: "Apply one explicitly approved managed Mod Uninstall Plan",
+      description:
+        "Apply exactly one previously reviewed Uninstall Plan by UUID. Rechecks active required dependents and all frozen plan/current-state guards before changing the game. Call only after explicit user approval of this exact uninstallPlanId.",
+      inputSchema: {
+        uninstallPlanId: z.string().uuid()
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ uninstallPlanId }) =>
+      safe(async () => {
+        const applied = await (
+          await agenticInstalls()
+        ).applyUninstall(uninstallPlanId);
+        const lifecycle = await (
+          await agenticInstalls()
+        ).getUninstallPlanLifecycle(uninstallPlanId);
+        return ok(
+          `Uninstall Plan ${uninstallPlanId} committed as transaction ${applied.transactionId}.`,
+          {
+            ok: true,
+            uninstall: {
+              uninstallPlanId,
+              transactionId: applied.transactionId,
+              installationId: applied.record.installationId,
+              recordState: applied.record.state,
+              retainedPaths: applied.retainedPaths,
+              retainedFilePaths: applied.retainedFilePaths
+            },
+            lifecycle: lifecycle.lifecycle,
+            meta: meta("local", null, [
+              "Run verify_mod_uninstall before claiming that managed files were removed.",
+              ...(applied.retainedPaths.length > 0
+                ? ["Unmanaged or generated data was intentionally retained."]
+                : [])
+            ])
+          }
+        );
+      })
+  );
+
+  server.registerTool(
+    "verify_mod_uninstall",
+    {
+      title: "Verify one committed managed Mod uninstall",
+      description:
+        "Verify that the Installation Record is terminal and that each owned file was removed or each replaced path was restored to its pre-install state. Unmanaged retained data is allowed and reported. Does not modify the game.",
+      inputSchema: {
+        installationId: z.string().uuid()
+      },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ installationId }) =>
+      safe(async () => {
+        const verification = await (
+          await agenticInstalls()
+        ).verifyUninstall(installationId);
+        return ok(
+          verification.passed
+            ? `Installation ${installationId} passes uninstall verification.`
+            : `Installation ${installationId} does not pass uninstall verification.`,
+          {
+            ok: true,
+            installationId,
+            passed: verification.passed,
+            recordState: verification.record.state,
+            checks: verification.checks,
+            retainedFilePaths: verification.retainedFilePaths,
+            meta: meta(
+              "local",
+              null,
+              verification.passed
+                ? []
+                : [
+                    "Do not claim uninstall success; inspect the failed checks and transaction journal."
+                  ]
+            )
           }
         );
       })

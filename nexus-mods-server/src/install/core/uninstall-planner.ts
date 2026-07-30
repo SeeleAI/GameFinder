@@ -74,6 +74,7 @@ export async function planModUninstall(input: {
 
   const actions: UninstallAction[] = [];
   const retainedPaths: string[] = [];
+  const retainedFilePaths: string[] = [];
   for (const outcome of [...input.record.operationOutcomes].reverse()) {
     if (outcome.outcome !== "applied") continue;
     const inspectedPath = inspection.paths.find(
@@ -88,9 +89,14 @@ export async function planModUninstall(input: {
     ) {
       continue;
     }
-    if (inspectedPath.state === "unmanaged_extra") {
+    if (
+      inspectedPath.state === "unmanaged_extra" ||
+      (inspectedPath.unmanagedFilePaths?.length ?? 0) > 0 ||
+      (inspectedPath.unmanagedDirectoryPaths?.length ?? 0) > 0
+    ) {
       retainedPaths.push(outcome.targetRelativePath);
     }
+    retainedFilePaths.push(...(inspectedPath.unmanagedFilePaths ?? []));
 
     switch (outcome.operationKind) {
       case "install_new_file":
@@ -218,6 +224,7 @@ export async function planModUninstall(input: {
       gameProfileVersion: input.profile.profileVersion,
       actions,
       retainedPaths: [...new Set(retainedPaths)],
+      retainedFilePaths: [...new Set(retainedFilePaths)],
     },
     input.ttlMs === undefined ? {} : { ttlMs: input.ttlMs },
   );

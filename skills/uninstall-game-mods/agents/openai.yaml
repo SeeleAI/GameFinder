@@ -1,0 +1,4 @@
+interface:
+  display_name: "Uninstall Game Mods"
+  short_description: "Safely plan and uninstall managed game Mods"
+  default_prompt: "Use $uninstall-game-mods to inspect and safely uninstall a managed Mod by its Installation ID."

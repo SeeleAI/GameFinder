@@ -16,6 +16,7 @@ import type { DownloadReceipt } from "../src/download-verifier.js";
 import {
   AdapterRegistry,
   BackupStore,
+  InstallService,
   InstallationRecordStore,
   inspectDirectoryTree,
   inspectInstallationState,
@@ -390,6 +391,34 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
       instance: fixture.instance,
       planStore: uninstallPlanStore,
     });
+    const lifecycleService = await InstallService.create({
+      managerRoot: fixture.managerRoot,
+    });
+    await expect(
+      lifecycleService.getUninstallPlanLifecycle(
+        planned.plan.uninstallPlanId,
+      ),
+    ).resolves.toMatchObject({
+      lifecycle: {
+        state: "planned",
+        reason: "awaiting_approval",
+        transactionId: null,
+      },
+    });
+    await expect(
+      lifecycleService.getUninstallPlanLifecycle(
+        planned.plan.uninstallPlanId,
+        {
+          now: new Date(Date.parse(planned.plan.expiresAt) + 1),
+        },
+      ),
+    ).resolves.toMatchObject({
+      lifecycle: {
+        state: "stale",
+        reason: "expired",
+        transactionId: null,
+      },
+    });
     const result = await new UninstallEngine({
       managerRoot: fixture.managerRoot,
       planStore: uninstallPlanStore,
@@ -406,6 +435,18 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
     expect(result.record.state).toBe("uninstalled");
     expect(result.record.revision).toBe(2);
     expect(await stat(fixture.targetRoot).catch(() => null)).toBeNull();
+    await expect(
+      lifecycleService.getUninstallPlanLifecycle(
+        planned.plan.uninstallPlanId,
+      ),
+    ).resolves.toMatchObject({
+      lifecycle: {
+        state: "committed",
+        reason: "transaction_committed",
+        transactionId: result.transactionId,
+        journalState: "uninstalled",
+      },
+    });
   });
 
   it("preserves generated configuration while removing unchanged owned files", async () => {
@@ -418,6 +459,9 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
       instance: fixture.instance,
     });
     expect(inspection.paths[0]?.state).toBe("unmanaged_extra");
+    expect(inspection.paths[0]?.unmanagedFilePaths).toEqual([
+      "Mods/SkipFishingMinigame/config.json",
+    ]);
     expect(inspection.blocking).toBe(false);
 
     const uninstallPlanStore = await UninstallPlanStore.create({
@@ -429,6 +473,9 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
       instance: fixture.instance,
       planStore: uninstallPlanStore,
     });
+    expect(planned.plan.retainedFilePaths).toEqual([
+      "Mods/SkipFishingMinigame/config.json",
+    ]);
     const result = await new UninstallEngine({
       managerRoot: fixture.managerRoot,
       planStore: uninstallPlanStore,
@@ -443,6 +490,9 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
     });
 
     expect(result.record.state).toBe("uninstalled_with_retained_data");
+    expect(result.retainedFilePaths).toEqual([
+      "Mods/SkipFishingMinigame/config.json",
+    ]);
     expect(await readFile(path.join(fixture.targetRoot, "config.json"), "utf8")).toBe(
       '{"x":1}',
     );
@@ -453,9 +503,76 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
     ).toBeNull();
   });
 
+  it("treats generated files beside an exclusive install_tree as retained unmanaged data", async () => {
+    const fixture = await createTransactionFixture();
+    const installed = await applyFixture(fixture);
+    const exclusiveRecord = {
+      ...installed.record,
+      operationOutcomes: installed.record.operationOutcomes.map((outcome) => ({
+        ...outcome,
+        ownershipMode:
+          outcome.operationKind === "install_tree"
+            ? ("exclusive_tree" as const)
+            : outcome.ownershipMode,
+      })),
+    };
+    await writeFile(path.join(fixture.targetRoot, "config.json"), '{"x":1}');
+
+    const inspection = await inspectInstallationState({
+      record: exclusiveRecord,
+      profile: STARDEW_VALLEY_PROFILE,
+      instance: fixture.instance,
+    });
+    expect(inspection.blocking).toBe(false);
+    expect(inspection.paths[0]?.state).toBe("unmanaged_extra");
+    expect(inspection.paths[0]?.unmanagedFilePaths).toEqual([
+      "Mods/SkipFishingMinigame/config.json",
+    ]);
+
+    const uninstallPlanStore = await UninstallPlanStore.create({
+      managerRoot: fixture.managerRoot,
+    });
+    const planned = await planModUninstall({
+      record: exclusiveRecord,
+      profile: STARDEW_VALLEY_PROFILE,
+      instance: fixture.instance,
+      planStore: uninstallPlanStore,
+    });
+    expect(planned.plan.retainedPaths).toEqual([
+      "Mods/SkipFishingMinigame",
+    ]);
+    expect(planned.plan.retainedFilePaths).toEqual([
+      "Mods/SkipFishingMinigame/config.json",
+    ]);
+    expect(planned.plan.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "delete_owned_file",
+          targetRelativePath:
+            "Mods/SkipFishingMinigame/manifest.json",
+        }),
+        expect.objectContaining({
+          kind: "delete_owned_file",
+          targetRelativePath:
+            "Mods/SkipFishingMinigame/SkipFishingMinigame.dll",
+        }),
+      ]),
+    );
+  });
+
   it("blocks dirty owned files without deleting them", async () => {
     const fixture = await createTransactionFixture();
     const installed = await applyFixture(fixture);
+    const exclusiveRecord = {
+      ...installed.record,
+      operationOutcomes: installed.record.operationOutcomes.map((outcome) => ({
+        ...outcome,
+        ownershipMode:
+          outcome.operationKind === "install_tree"
+            ? ("exclusive_tree" as const)
+            : outcome.ownershipMode,
+      })),
+    };
     const dllPath = path.join(
       fixture.targetRoot,
       "SkipFishingMinigame.dll",
@@ -467,7 +584,7 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
 
     await expect(
       planModUninstall({
-        record: installed.record,
+        record: exclusiveRecord,
         profile: STARDEW_VALLEY_PROFILE,
         instance: fixture.instance,
         planStore: uninstallPlanStore,
@@ -552,6 +669,19 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
     expect(
       (await fixture.recordStore.get(installed.record.installationId)).state,
     ).toBe("runtime_unverified");
+    await expect(
+      (
+        await InstallService.create({
+          managerRoot: fixture.managerRoot,
+        })
+      ).getUninstallPlanLifecycle(planned.plan.uninstallPlanId),
+    ).resolves.toMatchObject({
+      lifecycle: {
+        state: "failed",
+        reason: "transaction_rolled_back",
+        journalState: "installed_restored",
+      },
+    });
     },
   );
 
@@ -585,6 +715,19 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
         instance: fixture.instance,
       }),
     ).rejects.toBeInstanceOf(SimulatedTransactionInterruption);
+    const lifecycleService = await InstallService.create({
+      managerRoot: fixture.managerRoot,
+    });
+    await expect(
+      lifecycleService.getUninstallPlanLifecycle(
+        planned.plan.uninstallPlanId,
+      ),
+    ).resolves.toMatchObject({
+      lifecycle: {
+        state: "applying",
+        reason: "transaction_active",
+      },
+    });
     const recovered = await new RecoveryManager({
       managerRoot: fixture.managerRoot,
       planStore: fixture.planStore,
@@ -603,6 +746,17 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
     expect(
       (await fixture.recordStore.get(installed.record.installationId)).state,
     ).toBe("runtime_unverified");
+    await expect(
+      lifecycleService.getUninstallPlanLifecycle(
+        planned.plan.uninstallPlanId,
+      ),
+    ).resolves.toMatchObject({
+      lifecycle: {
+        state: "failed",
+        reason: "transaction_rolled_back",
+        journalState: "installed_restored",
+      },
+    });
   });
 });
 

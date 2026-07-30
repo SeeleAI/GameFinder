@@ -9,6 +9,7 @@ import type {
   GameInstance,
   GameProfile,
   InstallOperation,
+  InstallationRecord,
   PackageAnalysis,
   PackageUnit,
 } from "../contracts.js";
@@ -26,11 +27,14 @@ import { StagingManager } from "../core/staging-manager.js";
 import { inspectPathState } from "../core/tree-state.js";
 import { hashZipFileEntry } from "../archive-inspector.js";
 import type { ApplyInstallResult } from "../core/transaction-engine.js";
+import type { ApplyUninstallResult } from "../core/uninstall-engine.js";
+import type { UninstallPlanResult } from "../core/uninstall-planner.js";
 import { sha256File } from "../file-hash.js";
 import type {
   InspectedInstallInput,
   InstallInputReference,
   InstallService,
+  VerifyUninstallResult,
 } from "../install-service.js";
 import {
   normalizeManagedRelativePath,
@@ -176,6 +180,26 @@ export interface AgenticMethodQueryResult {
   contextAdvisories: ReadonlyArray<{
     code: "REGISTERED_PROFILE_AVAILABLE";
     legacyProfileId: string;
+    message: string;
+  }>;
+}
+
+export interface UninstallDependentSummary {
+  installationId: string;
+  recordKind: InstallationDependencySnapshot["dependent"]["recordKind"];
+  nexus: InstallationDependencySnapshot["dependent"]["nexus"];
+  dependency: InstallationDependencySnapshot["dependencies"][number];
+}
+
+export interface UninstallInspectionResult {
+  record: InstallationRecord;
+  dependencyNodeId: string;
+  gameRoot: string;
+  currentState: Awaited<ReturnType<InstallService["inspectInstallation"]>>["inspection"];
+  activeDependents: ReadonlyArray<UninstallDependentSummary>;
+  eligible: boolean;
+  blockers: ReadonlyArray<{
+    code: "UNINSTALL_BLOCKED" | "INSTALLATION_DIRTY" | "DEPENDENTS_EXIST";
     message: string;
   }>;
 }
@@ -535,6 +559,119 @@ export class AgenticInstallService {
     failures: Array<{ installationId: string; message: string }>;
   }> {
     return await this.#dependencies.reconcile();
+  }
+
+  async inspectUninstall(
+    installationId: string,
+  ): Promise<UninstallInspectionResult> {
+    const inspected = await this.#legacy.inspectInstallation(installationId);
+    const dependencyNodeId =
+      `nexus:${inspected.record.nexus.domainName.toLowerCase()}:` +
+      `${inspected.record.nexus.modId}`;
+    const dependentSnapshots = await this.#dependencies.findDependents({
+      dependencyNodeId,
+      gameRoot: inspected.instance.gameRoot,
+    });
+    const activeDependents = dependentSnapshots.flatMap((snapshot) => {
+      const dependency = snapshot.dependencies.find(
+        (candidate) =>
+          candidate.required &&
+          candidate.nodeId.toLowerCase() === dependencyNodeId.toLowerCase(),
+      );
+      return dependency
+        ? [
+            {
+              installationId: snapshot.installationId,
+              recordKind: snapshot.dependent.recordKind,
+              nexus: snapshot.dependent.nexus,
+              dependency,
+            },
+          ]
+        : [];
+    });
+    const blockers: UninstallInspectionResult["blockers"][number][] = [];
+    if (
+      inspected.record.state === "uninstalled" ||
+      inspected.record.state === "uninstalled_with_retained_data"
+    ) {
+      blockers.push({
+        code: "UNINSTALL_BLOCKED",
+        message: "The Installation Record is already uninstalled.",
+      });
+    }
+    if (inspected.inspection.blocking) {
+      blockers.push({
+        code: "INSTALLATION_DIRTY",
+        message:
+          "Managed paths were modified, protected, or replaced by another managed layer.",
+      });
+    }
+    if (activeDependents.length > 0) {
+      blockers.push({
+        code: "DEPENDENTS_EXIST",
+        message:
+          "One or more active managed installations require this Nexus Mod.",
+      });
+    }
+    return {
+      record: inspected.record,
+      dependencyNodeId,
+      gameRoot: inspected.instance.gameRoot,
+      currentState: inspected.inspection,
+      activeDependents,
+      eligible: blockers.length === 0,
+      blockers,
+    };
+  }
+
+  async planUninstall(
+    installationId: string,
+    options: { ttlMs?: number } = {},
+  ): Promise<UninstallPlanResult> {
+    const inspection = await this.inspectUninstall(installationId);
+    this.#assertNoActiveDependents(inspection);
+    return await this.#legacy.planUninstall(installationId, options);
+  }
+
+  async getUninstallPlan(uninstallPlanId: string) {
+    return await this.#legacy.getUninstallPlan(uninstallPlanId);
+  }
+
+  async getUninstallPlanLifecycle(uninstallPlanId: string) {
+    return await this.#legacy.getUninstallPlanLifecycle(
+      uninstallPlanId,
+    );
+  }
+
+  async applyUninstall(
+    uninstallPlanId: string,
+  ): Promise<ApplyUninstallResult> {
+    const plan = await this.#legacy.getUninstallPlan(uninstallPlanId);
+    const inspection = await this.inspectUninstall(plan.installationId);
+    this.#assertNoActiveDependents(inspection);
+    return await this.#legacy.applyUninstall(uninstallPlanId);
+  }
+
+  async verifyUninstall(
+    installationId: string,
+  ): Promise<VerifyUninstallResult> {
+    return await this.#legacy.verifyUninstall(installationId);
+  }
+
+  #assertNoActiveDependents(inspection: UninstallInspectionResult): void {
+    if (inspection.activeDependents.length === 0) return;
+    throw new NexusError(
+      "DEPENDENTS_EXIST",
+      "Uninstall is blocked because active managed installations require this Mod.",
+      {
+        details: {
+          installationId: inspection.record.installationId,
+          dependencyNodeId: inspection.dependencyNodeId,
+          gameRoot: inspection.gameRoot,
+          activeDependents: inspection.activeDependents,
+        },
+      },
+    );
   }
 
   async #managedOwnership(

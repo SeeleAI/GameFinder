@@ -12,14 +12,22 @@ import type {
   GameInstance,
   GameProfile,
   InstallPlan,
+  OperationOutcome,
   PackageAnalysis,
   PackageUnit,
+  PathState,
+  TransactionPhase,
+  UninstallPlan,
 } from "./contracts.js";
 import { packageAnalysisSchema } from "./contracts.js";
 import { planModInstall, type InstallPlanResult } from "./core/install-planner.js";
 import { RecoveryManager, type RecoveryResult } from "./core/recovery-manager.js";
 import { StagingManager } from "./core/staging-manager.js";
 import { inspectInstallationState } from "./core/state-inspector.js";
+import {
+  inspectDirectoryTree,
+  inspectPathState,
+} from "./core/tree-state.js";
 import {
   TransactionEngine,
   type ApplyInstallResult,
@@ -53,6 +61,7 @@ import {
   AgenticFileMethodAdapter,
 } from "./v2/agentic-file-method-adapter.js";
 import { LegacyV1CompatibilityProvider } from "./v2/legacy-compatibility-provider.js";
+import { resolveManagedTarget } from "./path-policy.js";
 
 export interface InstallInputReference {
   archivePath: string;
@@ -85,6 +94,60 @@ export interface PlannedInstall {
   instance: GameInstance;
   profile: GameProfile;
   verifiedInput: VerifiedInstallInput;
+}
+
+export interface UninstallVerificationCheck {
+  operationId: string;
+  operationKind: OperationOutcome["operationKind"];
+  targetRelativePath: string;
+  passed: boolean;
+  expected: string;
+  actual: PathState | ReadonlyArray<{
+    targetRelativePath: string;
+    state: PathState;
+  }>;
+}
+
+export interface VerifyUninstallResult {
+  record: Awaited<ReturnType<InstallService["getInstallation"]>>;
+  passed: boolean;
+  checks: ReadonlyArray<UninstallVerificationCheck>;
+  retainedFilePaths: ReadonlyArray<string>;
+}
+
+export interface UninstallPlanLifecycle {
+  uninstallPlanId: string;
+  state:
+    | "planned"
+    | "stale"
+    | "applying"
+    | "committed"
+    | "failed"
+    | "recovery_required";
+  reason:
+    | "awaiting_approval"
+    | "expired"
+    | "installation_record_changed"
+    | "transaction_active"
+    | "transaction_committed"
+    | "transaction_rolled_back"
+    | "transaction_recovery_required";
+  transactionId: string | null;
+  journalState: TransactionPhase | null;
+  completedAt: string | null;
+  observedAt: string;
+}
+
+function pathStateEquals(left: PathState, right: PathState): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "absent" || right.kind === "absent") return true;
+  if (left.kind === "file" && right.kind === "file") {
+    return left.bytes === right.bytes && left.sha256 === right.sha256;
+  }
+  if (left.kind === "directory" && right.kind === "directory") {
+    return left.treeHash === right.treeHash;
+  }
+  return false;
 }
 
 export function resolveDefaultManagerRoot(): string {
@@ -506,6 +569,17 @@ export class InstallService {
     };
   }
 
+  async inspectInstallation(installationId: string) {
+    const { record, profile, instance } =
+      await this.getInstallationContext(installationId);
+    const inspection = await inspectInstallationState({
+      record,
+      profile,
+      instance,
+    });
+    return { record, profile, instance, inspection };
+  }
+
   async verifyInstallation(installationId: string) {
     const record = await this.#recordStore.get(installationId);
     const context = await this.#contextStore.get(record.sourcePlanId);
@@ -532,6 +606,158 @@ export class InstallService {
     };
   }
 
+  async verifyUninstall(
+    installationId: string,
+  ): Promise<VerifyUninstallResult> {
+    const { record, profile, instance } =
+      await this.getInstallationContext(installationId);
+    const checks: UninstallVerificationCheck[] = [];
+    const retainedFilePaths: string[] = [];
+    for (const outcome of record.operationOutcomes) {
+      if (outcome.outcome !== "applied") continue;
+      const target = resolveManagedTarget({
+        gameRoot: instance.gameRoot,
+        targetRelativePath: outcome.targetRelativePath,
+        writableRoots: profile.filesystem.writableRoots,
+        protectedRoots: profile.filesystem.protectedRoots,
+      });
+      switch (outcome.operationKind) {
+        case "install_new_file": {
+          const actual = await inspectPathState(target.targetAbsolutePath);
+          checks.push({
+            operationId: outcome.operationId,
+            operationKind: outcome.operationKind,
+            targetRelativePath: target.targetRelativePath,
+            passed: actual.kind === "absent",
+            expected: "installed file is absent",
+            actual,
+          });
+          break;
+        }
+        case "replace_file":
+        case "replace_managed_tree": {
+          const actual = await inspectPathState(target.targetAbsolutePath);
+          checks.push({
+            operationId: outcome.operationId,
+            operationKind: outcome.operationKind,
+            targetRelativePath: target.targetRelativePath,
+            passed: pathStateEquals(actual, outcome.preState),
+            expected: "path matches its exact pre-install state",
+            actual,
+          });
+          break;
+        }
+        case "install_tree": {
+          const actual = await Promise.all(
+            outcome.ownedFiles.map(async (file) => {
+              const ownedTarget = resolveManagedTarget({
+                gameRoot: instance.gameRoot,
+                targetRelativePath: path.posix.join(
+                  target.targetRelativePath,
+                  file.relativePath,
+                ),
+                writableRoots: profile.filesystem.writableRoots,
+                protectedRoots: profile.filesystem.protectedRoots,
+              });
+              return {
+                targetRelativePath: ownedTarget.targetRelativePath,
+                state: await inspectPathState(ownedTarget.targetAbsolutePath),
+              };
+            }),
+          );
+          checks.push({
+            operationId: outcome.operationId,
+            operationKind: outcome.operationKind,
+            targetRelativePath: target.targetRelativePath,
+            passed: actual.every((item) => item.state.kind === "absent"),
+            expected:
+              "every file owned by the installed tree is absent; unmanaged data may remain",
+            actual,
+          });
+          const rootState = await inspectPathState(
+            target.targetAbsolutePath,
+          );
+          if (rootState.kind === "directory") {
+            const tree = await inspectDirectoryTree(
+              target.targetAbsolutePath,
+            );
+            retainedFilePaths.push(
+              ...tree.files.map((file) =>
+                path.posix.join(
+                  target.targetRelativePath,
+                  file.relativePath,
+                ),
+              ),
+            );
+          }
+          break;
+        }
+        case "ensure_directory": {
+          const actual = await inspectPathState(target.targetAbsolutePath);
+          const passed =
+            outcome.preState.kind === "absent"
+              ? actual.kind === "absent" || actual.kind === "directory"
+              : actual.kind === "directory";
+          checks.push({
+            operationId: outcome.operationId,
+            operationKind: outcome.operationKind,
+            targetRelativePath: target.targetRelativePath,
+            passed,
+            expected:
+              outcome.preState.kind === "absent"
+                ? "created directory is absent or retained only for unmanaged data"
+                : "pre-existing directory remains",
+            actual,
+          });
+          if (
+            outcome.preState.kind === "absent" &&
+            actual.kind === "directory"
+          ) {
+            const tree = await inspectDirectoryTree(
+              target.targetAbsolutePath,
+            );
+            retainedFilePaths.push(
+              ...tree.files.map((file) =>
+                path.posix.join(
+                  target.targetRelativePath,
+                  file.relativePath,
+                ),
+              ),
+            );
+          }
+          break;
+        }
+        case "remove_empty_directory": {
+          const actual = await inspectPathState(target.targetAbsolutePath);
+          checks.push({
+            operationId: outcome.operationId,
+            operationKind: outcome.operationKind,
+            targetRelativePath: target.targetRelativePath,
+            passed: actual.kind === "directory",
+            expected: "removed pre-install directory is restored",
+            actual,
+          });
+          break;
+        }
+        default: {
+          const exhaustive: never = outcome.operationKind;
+          return exhaustive;
+        }
+      }
+    }
+    const terminal =
+      record.state === "uninstalled" ||
+      record.state === "uninstalled_with_retained_data";
+    return {
+      record,
+      passed: terminal && checks.every((check) => check.passed),
+      checks,
+      retainedFilePaths: [...new Set(retainedFilePaths)].sort(
+        (left, right) => left.localeCompare(right),
+      ),
+    };
+  }
+
   async planUninstall(
     installationId: string,
     options: { ttlMs?: number } = {},
@@ -551,6 +777,118 @@ export class InstallService {
     return await this.#uninstallPlanStore.get(uninstallPlanId, {
       allowExpired: true,
     });
+  }
+
+  async getUninstallPlanLifecycle(
+    uninstallPlanId: string,
+    options: { now?: Date } = {},
+  ): Promise<{
+    plan: UninstallPlan;
+    lifecycle: UninstallPlanLifecycle;
+  }> {
+    const plan = await this.getUninstallPlan(uninstallPlanId);
+    const observedAt = (options.now ?? new Date()).toISOString();
+    const journal = await this.#journalStore.findLatestByPlan(
+      uninstallPlanId,
+    );
+    if (journal) {
+      if (journal.state === "uninstalled") {
+        return {
+          plan,
+          lifecycle: {
+            uninstallPlanId,
+            state: "committed",
+            reason: "transaction_committed",
+            transactionId: journal.transactionId,
+            journalState: journal.state,
+            completedAt: journal.completedAt,
+            observedAt,
+          },
+        };
+      }
+      if (journal.state === "installed_restored") {
+        return {
+          plan,
+          lifecycle: {
+            uninstallPlanId,
+            state: "failed",
+            reason: "transaction_rolled_back",
+            transactionId: journal.transactionId,
+            journalState: journal.state,
+            completedAt: journal.completedAt,
+            observedAt,
+          },
+        };
+      }
+      if (journal.state === "recovery_required") {
+        return {
+          plan,
+          lifecycle: {
+            uninstallPlanId,
+            state: "recovery_required",
+            reason: "transaction_recovery_required",
+            transactionId: journal.transactionId,
+            journalState: journal.state,
+            completedAt: journal.completedAt,
+            observedAt,
+          },
+        };
+      }
+      return {
+        plan,
+        lifecycle: {
+          uninstallPlanId,
+          state: "applying",
+          reason: "transaction_active",
+          transactionId: journal.transactionId,
+          journalState: journal.state,
+          completedAt: journal.completedAt,
+          observedAt,
+        },
+      };
+    }
+
+    const record = await this.#recordStore.get(plan.installationId);
+    if (record.revision !== plan.installationRevision) {
+      return {
+        plan,
+        lifecycle: {
+          uninstallPlanId,
+          state: "stale",
+          reason: "installation_record_changed",
+          transactionId: null,
+          journalState: null,
+          completedAt: null,
+          observedAt,
+        },
+      };
+    }
+    if (Date.parse(plan.expiresAt) <= Date.parse(observedAt)) {
+      return {
+        plan,
+        lifecycle: {
+          uninstallPlanId,
+          state: "stale",
+          reason: "expired",
+          transactionId: null,
+          journalState: null,
+          completedAt: null,
+          observedAt,
+        },
+      };
+    }
+    return {
+      plan,
+      lifecycle: {
+        uninstallPlanId,
+        state: "planned",
+        reason: "awaiting_approval",
+        transactionId: null,
+        journalState: null,
+        completedAt: null,
+        observedAt,
+      },
+    };
   }
 
   async applyUninstall(

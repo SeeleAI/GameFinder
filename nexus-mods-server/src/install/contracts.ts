@@ -378,7 +378,9 @@ export const inspectedPathSchema = z.object({
   ]),
   expectedPostState: pathStateSchema.nullable(),
   actualState: pathStateSchema,
-  currentOwnerInstallationId: z.string().uuid().nullable()
+  currentOwnerInstallationId: z.string().uuid().nullable(),
+  unmanagedFilePaths: z.array(relativePath).max(100_000).optional(),
+  unmanagedDirectoryPaths: z.array(relativePath).max(100_000).optional()
 });
 
 export const currentStateInspectionSchema = z.object({
@@ -440,7 +442,8 @@ export const uninstallPlanSchema = z.object({
   createdAt: timestamp,
   expiresAt: timestamp,
   actions: z.array(uninstallActionSchema).max(200_000),
-  retainedPaths: z.array(relativePath).max(100_000)
+  retainedPaths: z.array(relativePath).max(100_000),
+  retainedFilePaths: z.array(relativePath).max(100_000).optional()
 });
 
 export type ArchiveIdentity = z.infer<typeof archiveIdentitySchema>;

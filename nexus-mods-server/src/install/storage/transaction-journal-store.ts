@@ -190,6 +190,41 @@ export class TransactionJournalStore {
     return new TransactionJournalWriter(this, transactionId, nextSequence);
   }
 
+  async findLatestByPlan(
+    planId: string,
+  ): Promise<TransactionJournal | null> {
+    const matches: TransactionJournal[] = [];
+    for (const name of await readdir(this.#root)) {
+      const match = /^([0-9a-f-]{36})\.ndjson$/i.exec(name);
+      if (!match?.[1]) continue;
+      let header: Partial<JournalHeaderLine>;
+      try {
+        const firstLine = (
+          await readFile(path.join(this.#root, name), "utf8")
+        ).split(/\r?\n/, 1)[0];
+        if (!firstLine) continue;
+        header = JSON.parse(firstLine) as Partial<JournalHeaderLine>;
+      } catch {
+        // A journal without a readable header cannot be associated with this
+        // Plan. Exact transaction reads still surface its corruption.
+        continue;
+      }
+      if (
+        header.kind !== "header" ||
+        header.planId !== planId ||
+        header.transactionId !== match[1]
+      ) {
+        continue;
+      }
+      matches.push(await this.read(match[1]));
+    }
+    return (
+      matches.sort((left, right) =>
+        right.startedAt.localeCompare(left.startedAt),
+      )[0] ?? null
+    );
+  }
+
   async read(transactionId: string): Promise<TransactionJournal> {
     assertTransactionId(transactionId);
     let text: string;

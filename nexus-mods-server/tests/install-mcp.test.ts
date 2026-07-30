@@ -200,6 +200,11 @@ describe("Phase 6B-4 installation MCP", () => {
         "reconcile_installation_dependencies",
         "get_install_status",
         "verify_mod_install",
+        "inspect_mod_uninstall",
+        "plan_mod_uninstall",
+        "get_mod_uninstall_plan",
+        "apply_mod_uninstall",
+        "verify_mod_uninstall",
         "rollback_mod_install",
       ]),
     );
@@ -225,6 +230,17 @@ describe("Phase 6B-4 installation MCP", () => {
     expect(
       Object.keys(agenticApplyTool?.inputSchema.properties ?? {}),
     ).toEqual(["planId"]);
+    const uninstallApplyTool = listed.tools.find(
+      (tool) => tool.name === "apply_mod_uninstall",
+    );
+    expect(uninstallApplyTool?.inputSchema).toMatchObject({
+      type: "object",
+      properties: { uninstallPlanId: expect.any(Object) },
+      required: ["uninstallPlanId"],
+    });
+    expect(
+      Object.keys(uninstallApplyTool?.inputSchema.properties ?? {}),
+    ).toEqual(["uninstallPlanId"]);
 
     const inspected = await client.callTool({
       name: "inspect_mod_archive",
@@ -372,6 +388,150 @@ describe("Phase 6B-4 installation MCP", () => {
             expect.stringContaining("runtime-generated or unmanaged extra"),
           ],
         },
+      ],
+    });
+
+    const uninstallInspection = await client.callTool({
+      name: "inspect_mod_uninstall",
+      arguments: { installationId },
+    });
+    expect(uninstallInspection.isError).not.toBe(true);
+    expect(uninstallInspection.structuredContent).toMatchObject({
+      ok: true,
+      inspection: {
+        eligible: true,
+        dependencyNodeId: "nexus:stardewvalley:2697",
+        activeDependents: [],
+        blockers: [],
+      },
+    });
+
+    const uninstallPlanned = await client.callTool({
+      name: "plan_mod_uninstall",
+      arguments: { installationId },
+    });
+    expect(uninstallPlanned.isError).not.toBe(true);
+    expect(uninstallPlanned.structuredContent).toMatchObject({
+      ok: true,
+      plan: {
+        installationId,
+        status: "planned",
+        retainedPaths: ["Mods/SkipFishingMinigame"],
+        retainedFilePaths: [
+          "Mods/SkipFishingMinigame/config.json",
+        ],
+        actions: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "delete_owned_file",
+            targetRelativePath:
+              "Mods/SkipFishingMinigame/manifest.json",
+          }),
+          expect.objectContaining({
+            kind: "delete_owned_file",
+            targetRelativePath:
+              "Mods/SkipFishingMinigame/SkipFishingMinigame.dll",
+          }),
+        ]),
+      },
+      approval: {
+        required: true,
+        approved: false,
+        applyTool: "apply_mod_uninstall",
+      },
+      lifecycle: {
+        state: "planned",
+        reason: "awaiting_approval",
+        transactionId: null,
+      },
+    });
+    const uninstallPlanId = (
+      uninstallPlanned.structuredContent as {
+        plan: { uninstallPlanId: string };
+      }
+    ).plan.uninstallPlanId;
+
+    const storedUninstallPlan = await client.callTool({
+      name: "get_mod_uninstall_plan",
+      arguments: { uninstallPlanId },
+    });
+    expect(storedUninstallPlan.structuredContent).toMatchObject({
+      ok: true,
+      plan: {
+        uninstallPlanId,
+        installationId,
+        status: "planned",
+      },
+      lifecycle: {
+        state: "planned",
+        reason: "awaiting_approval",
+      },
+      approval: {
+        required: true,
+        uninstallPlanId,
+      },
+    });
+
+    const uninstallApplied = await client.callTool({
+      name: "apply_mod_uninstall",
+      arguments: { uninstallPlanId },
+    });
+    expect(uninstallApplied.isError).not.toBe(true);
+    expect(uninstallApplied.structuredContent).toMatchObject({
+      ok: true,
+      uninstall: {
+        uninstallPlanId,
+        installationId,
+        recordState: "uninstalled_with_retained_data",
+        retainedPaths: ["Mods/SkipFishingMinigame"],
+        retainedFilePaths: [
+          "Mods/SkipFishingMinigame/config.json",
+        ],
+      },
+      lifecycle: {
+        state: "committed",
+        reason: "transaction_committed",
+      },
+    });
+    expect(
+      await stat(
+        path.join(
+          fixture.gameRoot,
+          "Mods",
+          "SkipFishingMinigame",
+          "manifest.json",
+        ),
+      ).catch(() => null),
+    ).toBeNull();
+    expect(
+      await readFile(
+        path.join(
+          fixture.gameRoot,
+          "Mods",
+          "SkipFishingMinigame",
+          "config.json",
+        ),
+        "utf8",
+      ),
+    ).toBe('{"generated":true}');
+
+    const uninstallVerified = await client.callTool({
+      name: "verify_mod_uninstall",
+      arguments: { installationId },
+    });
+    expect(uninstallVerified.isError).not.toBe(true);
+    expect(uninstallVerified.structuredContent).toMatchObject({
+      ok: true,
+      installationId,
+      passed: true,
+      recordState: "uninstalled_with_retained_data",
+      retainedFilePaths: [
+        "Mods/SkipFishingMinigame/config.json",
+      ],
+      checks: [
+        expect.objectContaining({
+          operationKind: "install_tree",
+          passed: true,
+        }),
       ],
     });
   });

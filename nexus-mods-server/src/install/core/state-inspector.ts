@@ -16,7 +16,7 @@ import {
   normalizeManagedRelativePath,
   resolveManagedTarget,
 } from "../path-policy.js";
-import { inspectPathState } from "./tree-state.js";
+import { inspectDirectoryTree, inspectPathState } from "./tree-state.js";
 
 export interface CurrentOwnershipLayer {
   targetRelativePath: string;
@@ -39,37 +39,90 @@ async function classifyTreeOutcome(
   outcome: OperationOutcome,
   targetAbsolutePath: string,
   actualState: PathState,
-): Promise<"unchanged" | "missing" | "modified" | "unmanaged_extra"> {
-  if (actualState.kind === "absent") return "missing";
-  if (actualState.kind !== "directory") return "modified";
-  if (stateEquals(actualState, outcome.postState)) return "unchanged";
+): Promise<{
+  state: "unchanged" | "missing" | "modified" | "unmanaged_extra";
+  unmanagedFilePaths: string[];
+  unmanagedDirectoryPaths: string[];
+}> {
+  if (actualState.kind === "absent") {
+    return {
+      state: "missing",
+      unmanagedFilePaths: [],
+      unmanagedDirectoryPaths: [],
+    };
+  }
+  if (actualState.kind !== "directory") {
+    return {
+      state: "modified",
+      unmanagedFilePaths: [],
+      unmanagedDirectoryPaths: [],
+    };
+  }
+  if (stateEquals(actualState, outcome.postState)) {
+    return {
+      state: "unchanged",
+      unmanagedFilePaths: [],
+      unmanagedDirectoryPaths: [],
+    };
+  }
   if (
-    outcome.ownershipMode !== "installed_file_set" ||
+    outcome.operationKind !== "install_tree" ||
     outcome.ownedFiles.length === 0
   ) {
-    return "modified";
+    return {
+      state: "modified",
+      unmanagedFilePaths: [],
+      unmanagedDirectoryPaths: [],
+    };
   }
 
+  const tree = await inspectDirectoryTree(targetAbsolutePath);
+  const actualFiles = new Map(
+    tree.files.map((file) => [file.relativePath.toLowerCase(), file] as const),
+  );
+  const ownedFiles = new Set(
+    outcome.ownedFiles.map((file) => file.relativePath.toLowerCase()),
+  );
+  const unmanagedFilePaths = tree.files
+    .filter((file) => !ownedFiles.has(file.relativePath.toLowerCase()))
+    .map((file) => file.relativePath);
+  const ownedDirectories = new Set(
+    outcome.ownedDirectories.map((directory) => directory.toLowerCase()),
+  );
+  const unmanagedDirectoryPaths = tree.directories
+    .filter(
+      (directory) =>
+        !ownedDirectories.has(directory.relativePath.toLowerCase()),
+    )
+    .map((directory) => directory.relativePath);
   let missing = false;
   for (const file of outcome.ownedFiles) {
-    const absolutePath = path.resolve(
-      targetAbsolutePath,
-      ...file.relativePath.split("/"),
-    );
-    const fileState = await inspectPathState(absolutePath);
-    if (fileState.kind === "absent") {
+    const actual = actualFiles.get(file.relativePath.toLowerCase());
+    if (!actual) {
       missing = true;
       continue;
     }
     if (
-      fileState.kind !== "file" ||
-      fileState.bytes !== file.bytes ||
-      fileState.sha256 !== file.sha256
+      actual.bytes !== file.bytes ||
+      actual.sha256 !== file.sha256
     ) {
-      return "modified";
+      return {
+        state: "modified",
+        unmanagedFilePaths,
+        unmanagedDirectoryPaths,
+      };
     }
   }
-  return missing ? "missing" : "unmanaged_extra";
+  return {
+    state: missing
+      ? "missing"
+      : unmanagedFilePaths.length > 0 ||
+          unmanagedDirectoryPaths.length > 0
+        ? "unmanaged_extra"
+        : "modified",
+    unmanagedFilePaths,
+    unmanagedDirectoryPaths,
+  };
 }
 
 function currentOwner(
@@ -136,6 +189,8 @@ export async function inspectInstallationState(input: {
       targetRelativePath,
     );
     let state: CurrentStateInspection["paths"][number]["state"];
+    let unmanagedFilePaths: string[] = [];
+    let unmanagedDirectoryPaths: string[] = [];
     if (owner && owner.installationId !== input.record.installationId) {
       state = "replaced_by_managed_layer";
     } else if (
@@ -144,10 +199,22 @@ export async function inspectInstallationState(input: {
     ) {
       state = "unchanged";
     } else if (outcome.postState.kind === "directory") {
-      state = await classifyTreeOutcome(
+      const classified = await classifyTreeOutcome(
         outcome,
         targetAbsolutePath,
         actualState,
+      );
+      state = classified.state;
+      unmanagedFilePaths = classified.unmanagedFilePaths.map((child) =>
+        normalizeManagedRelativePath(
+          path.posix.join(targetRelativePath, child),
+        ),
+      );
+      unmanagedDirectoryPaths = classified.unmanagedDirectoryPaths.map(
+        (child) =>
+          normalizeManagedRelativePath(
+            path.posix.join(targetRelativePath, child),
+          ),
       );
     } else if (stateEquals(actualState, outcome.postState)) {
       state = "unchanged";
@@ -162,6 +229,8 @@ export async function inspectInstallationState(input: {
       expectedPostState: outcome.postState,
       actualState,
       currentOwnerInstallationId: owner?.installationId ?? null,
+      unmanagedFilePaths,
+      unmanagedDirectoryPaths,
     });
   }
 

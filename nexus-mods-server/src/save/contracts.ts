@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 
 import { sha256CanonicalJson } from "../install/content-hash.js";
+import { planReviewSchema } from "../plan-review.js";
 
 export const SAVE_CONTRACT_VERSION = 1 as const;
 export const SAVE_SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -457,6 +458,7 @@ const commonPlanFields = {
   preconditionStateHash: sha256,
   operations: z.array(saveWriteOperationSchema).min(1).max(10_000),
   rescueUnitId: identifier,
+  review: planReviewSchema.optional(),
 };
 
 export const saveRestorePlanSchema = z.object({

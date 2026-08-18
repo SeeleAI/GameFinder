@@ -8,6 +8,7 @@ import {
   pathStateSchema,
 } from "../contracts.js";
 import { sha256CanonicalJson } from "../content-hash.js";
+import { planReviewSchema } from "../../plan-review.js";
 
 export const INSTALL_CONTRACT_V2_VERSION = 2 as const;
 
@@ -552,10 +553,13 @@ export const installPlanV2Schema = z.object({
     level: z.enum(["low", "medium", "high"]),
     reasons: z.array(boundedText).max(100),
   }),
-  approval: z.object({
-    requiresExplicitConfirmation: z.literal(true),
-    approvalDigest: sha256,
-  }),
+  review: planReviewSchema.optional(),
+  approval: z
+    .object({
+      requiresExplicitConfirmation: z.literal(true),
+      approvalDigest: sha256,
+    })
+    .optional(),
   preconditionStateHash: sha256,
 });
 

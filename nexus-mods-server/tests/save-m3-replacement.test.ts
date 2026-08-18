@@ -174,6 +174,33 @@ describe("save M3 compatibility", () => {
 });
 
 describe("save M3 replacement transaction", () => {
+  it("defaults to auto-safe and supports an explicit always-review override", async () => {
+    const fixture = await createFixture();
+    const assessment = await fixture.assessments.assess({
+      packageId: fixture.savePackage.packageId,
+      saveContextId: fixture.context.saveContextId,
+    });
+    const automatic = await fixture.replacements.planReplacement({
+      assessmentId: assessment.assessmentId,
+      strategy: "direct_replace",
+    });
+    expect(automatic.review).toMatchObject({
+      classification: "auto_safe",
+      nextAction: "apply_now",
+      requestScope: { mode: "auto_safe", action: "replace" },
+    });
+    const reviewed = await fixture.replacements.planReplacement({
+      assessmentId: assessment.assessmentId,
+      strategy: "direct_replace",
+      reviewMode: "always_review",
+    });
+    expect(reviewed.review).toMatchObject({
+      classification: "review_required",
+      nextAction: "request_confirmation",
+      requestScope: { mode: "always_review", action: "replace" },
+    });
+  });
+
   it("creates a rescue, replaces all planned files, verifies, and replays idempotently", async () => {
     const fixture = await createFixture();
     const assessment = await fixture.assessments.assess({

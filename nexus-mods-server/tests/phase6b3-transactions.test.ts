@@ -402,7 +402,7 @@ describe("Phase 6B-3 uninstall derivation and round-trip", () => {
     ).resolves.toMatchObject({
       lifecycle: {
         state: "planned",
-        reason: "awaiting_approval",
+        reason: "awaiting_apply",
         transactionId: null,
       },
     });

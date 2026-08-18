@@ -30,10 +30,10 @@ Call `stage_elden_ring_slot_import` only for the frozen plan, then `verify_elden
 - constrain every changed byte to the frozen allowlist;
 - prove all nine unselected target slots remain byte-identical.
 
-Staging is not approval to write the real save.
+Staging does not itself authorize a live write; authorization comes from the user's save-import request plus the frozen Replacement Plan classification.
 
 ## Real import and acceptance
 
-Call `plan_elden_ring_staged_replacement(stagedImportId)` to convert the verified staged artifact into an immutable slot-import Replacement Plan. Require explicit approval of its exact Replacement Plan ID before `apply_save_replacement`; apply requires a verified rescue backup, stopped Elden Ring/Steam processes, target-prestate revalidation, atomic publish, and static post-verification.
+Call `plan_elden_ring_staged_replacement(stagedImportId)` to convert the verified staged artifact into an immutable slot-import Replacement Plan. Default it to `auto_safe` when the selected source and target slots are unambiguous, any occupied-slot overwrite was already explicitly authorized, and the Plan exactly implements the user's import request. Apply the exact Plan ID without another confirmation turn. Use `review_required` for a material slot/account/strategy choice or missing overwrite consent; apply always requires a verified rescue backup, stopped Elden Ring/Steam processes, target-prestate revalidation, atomic publish, and static post-verification.
 
 Ask the user to launch offline, confirm the imported character is visible and loadable, save once, and exit. Never characterize author-claimed online safety as a guarantee. Unless the user explicitly keeps the result, restore the acceptance baseline and verify every managed-file hash plus the original character screen.

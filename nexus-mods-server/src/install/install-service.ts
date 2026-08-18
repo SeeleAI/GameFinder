@@ -56,6 +56,7 @@ import { PlanExecutionContextStore } from "./storage/plan-execution-context-stor
 import { PlanStore } from "./storage/plan-store.js";
 import { TransactionJournalStore } from "./storage/transaction-journal-store.js";
 import { UninstallPlanStore } from "./storage/uninstall-plan-store.js";
+import type { PlanReviewMode } from "../plan-review.js";
 import {
   AGENTIC_FILE_METHOD_ADAPTER_ID,
   AgenticFileMethodAdapter,
@@ -125,7 +126,7 @@ export interface UninstallPlanLifecycle {
     | "failed"
     | "recovery_required";
   reason:
-    | "awaiting_approval"
+    | "awaiting_apply"
     | "expired"
     | "installation_record_changed"
     | "transaction_active"
@@ -446,6 +447,7 @@ export class InstallService {
     profileId: string;
     gameRoot: string;
     packageUnitId?: string;
+    reviewMode?: PlanReviewMode;
   }): Promise<PlannedInstall> {
     const [{ verifiedInput, inventory, analysis: rawAnalysis }, instance] =
       await Promise.all([
@@ -474,6 +476,9 @@ export class InstallService {
         stagedPackage,
         registry: this.#registry,
         planStore: this.#planStore,
+        ...(input.reviewMode === undefined
+          ? {}
+          : { reviewMode: input.reviewMode }),
       });
       await this.#contextStore.save({
         planId: result.plan.planId,
@@ -512,6 +517,13 @@ export class InstallService {
       throw new NexusError(
         "PLAN_STALE",
         "Install Plan no longer matches its frozen execution context.",
+      );
+    }
+    if (plan.review?.classification === "blocked") {
+      throw new NexusError(
+        "PLAN_REVIEW_BLOCKED",
+        "Install Plan review classification blocks execution.",
+        { details: { planId, reasonCodes: plan.review.reasonCodes } },
       );
     }
     const verifiedInput = await verifyInstallInput({
@@ -760,7 +772,7 @@ export class InstallService {
 
   async planUninstall(
     installationId: string,
-    options: { ttlMs?: number } = {},
+    options: { ttlMs?: number; reviewMode?: PlanReviewMode } = {},
   ): Promise<UninstallPlanResult> {
     const record = await this.#recordStore.get(installationId);
     const context = await this.#contextStore.get(record.sourcePlanId);
@@ -770,6 +782,9 @@ export class InstallService {
       instance: context.instance,
       planStore: this.#uninstallPlanStore,
       ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
+      ...(options.reviewMode === undefined
+        ? {}
+        : { reviewMode: options.reviewMode }),
     });
   }
 
@@ -882,7 +897,7 @@ export class InstallService {
       lifecycle: {
         uninstallPlanId,
         state: "planned",
-        reason: "awaiting_approval",
+        reason: "awaiting_apply",
         transactionId: null,
         journalState: null,
         completedAt: null,

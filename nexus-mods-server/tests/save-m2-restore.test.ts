@@ -165,6 +165,38 @@ describe("save M2 restore planning", () => {
 });
 
 describe("save M2 restore execution", () => {
+  it("defaults to auto-safe and supports an explicit always-review override", async () => {
+    const fixture = await createFixture();
+    const backup = await fixture.backups.createBackup({
+      saveContextId: fixture.context.saveContextId,
+      unitId: "vanilla-main",
+      reason: "manual",
+    });
+    const automatic = await fixture.restores.planRestore({
+      backupId: backup.backupId,
+      saveContextId: fixture.context.saveContextId,
+      mode: "overlay",
+      targetKind: "sandbox",
+    });
+    expect(automatic.review).toMatchObject({
+      classification: "auto_safe",
+      nextAction: "apply_now",
+      requestScope: { mode: "auto_safe", action: "restore" },
+    });
+    const reviewed = await fixture.restores.planRestore({
+      backupId: backup.backupId,
+      saveContextId: fixture.context.saveContextId,
+      mode: "overlay",
+      targetKind: "sandbox",
+      reviewMode: "always_review",
+    });
+    expect(reviewed.review).toMatchObject({
+      classification: "review_required",
+      nextAction: "request_confirmation",
+      requestScope: { mode: "always_review", action: "restore" },
+    });
+  });
+
   it("restores a verified backup into a controlled sandbox and replays idempotently", async () => {
     const fixture = await createFixture();
     const backup = await fixture.backups.createBackup({

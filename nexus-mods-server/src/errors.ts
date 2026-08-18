@@ -39,7 +39,8 @@ export type NexusErrorCode =
   | "DEPENDENCY_UNRESOLVED"
   | "DOWNLOAD_PLAN_STALE"
   | "BUNDLE_INCOMPLETE"
-  | "BUNDLE_INVALID";
+  | "BUNDLE_INVALID"
+  | "PLAN_REVIEW_BLOCKED";
 
 export type InstallErrorCode =
   | "INPUT_RECEIPT_MISMATCH"

@@ -1,5 +1,7 @@
 import { z } from "zod/v4";
 
+import { planReviewSchema } from "../plan-review.js";
+
 export const INSTALL_CONTRACT_VERSION = 1 as const;
 export const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const ISO_TIMESTAMP_PATTERN =
@@ -237,7 +239,8 @@ export const installPlanSchema = z.object({
   }),
   operations: z.array(installOperationSchema).min(1).max(100_000),
   conflicts: z.array(installConflictSchema).max(100_000),
-  preconditionStateHash: sha256
+  preconditionStateHash: sha256,
+  review: planReviewSchema.optional()
 });
 
 export const transactionPhaseSchema = z.enum([
@@ -443,7 +446,8 @@ export const uninstallPlanSchema = z.object({
   expiresAt: timestamp,
   actions: z.array(uninstallActionSchema).max(200_000),
   retainedPaths: z.array(relativePath).max(100_000),
-  retainedFilePaths: z.array(relativePath).max(100_000).optional()
+  retainedFilePaths: z.array(relativePath).max(100_000).optional(),
+  review: planReviewSchema.optional()
 });
 
 export type ArchiveIdentity = z.infer<typeof archiveIdentitySchema>;

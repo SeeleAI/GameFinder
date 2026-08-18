@@ -17,6 +17,10 @@ import {
 } from "../path-policy.js";
 import { inspectInstallationState } from "./state-inspector.js";
 import { inspectPathState } from "./tree-state.js";
+import {
+  createPlanReview,
+  type PlanReviewMode,
+} from "../../plan-review.js";
 
 function joinManagedPath(root: string, child: string): string {
   return normalizeManagedRelativePath(
@@ -40,6 +44,7 @@ export async function planModUninstall(input: {
   instance: GameInstance;
   planStore: UninstallPlanStore;
   ttlMs?: number;
+  reviewMode?: PlanReviewMode;
 }): Promise<UninstallPlanResult> {
   if (
     input.record.state === "uninstalled" ||
@@ -225,6 +230,28 @@ export async function planModUninstall(input: {
       actions,
       retainedPaths: [...new Set(retainedPaths)],
       retainedFilePaths: [...new Set(retainedFilePaths)],
+      review: createPlanReview({
+        classification:
+          input.reviewMode === "always_review"
+            ? "review_required"
+            : "auto_safe",
+        reasonCodes:
+          input.reviewMode === "always_review"
+            ? ["USER_REQUESTED_REVIEW"]
+            : ["MANAGED_UNINSTALL"],
+        ...(input.reviewMode === undefined
+          ? {}
+          : { mode: input.reviewMode }),
+        action: "uninstall",
+        targetIds: [input.record.installationId],
+        decisionInputs: {
+          installationRevision: input.record.revision,
+          inspectionStateHash: inspection.stateHash,
+          actions,
+          retainedPaths: [...new Set(retainedPaths)],
+          retainedFilePaths: [...new Set(retainedFilePaths)],
+        },
+      }),
     },
     input.ttlMs === undefined ? {} : { ttlMs: input.ttlMs },
   );

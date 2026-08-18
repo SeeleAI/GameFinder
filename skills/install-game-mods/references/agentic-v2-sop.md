@@ -112,10 +112,10 @@ Call only when the matching readiness flag is true: `canSubmitFileProposal` for 
 
 ```text
 submit_install_proposal(evidencePackId, gameContextId, draft)
-freeze_install_plan(proposalId)
+freeze_install_plan(proposalId, reviewMode="auto_safe")
 ```
 
-Before asking for approval, show:
+Before apply, show:
 
 - Mod/package identity and Nexus source;
 - exact Archive and target game root;
@@ -123,13 +123,13 @@ Before asking for approval, show:
 - every operation kind and target;
 - conflicts and unresolved choices;
 - risk and reversibility;
-- `planId`, expiry, and approval digest.
+- `planId`, expiry, and the complete `review` object (`classification`, `reasonCodes`, `policyVersion`, `reviewDigest`, `nextAction`, and `requestScope`).
 
-State that the game directory is unchanged. Do not apply in the same turn that first reveals the Plan unless the user already approved that exact `planId`.
+State that the game directory is unchanged. Treat the returned `review` as authoritative. The default mode is `auto_safe`; pass `always_review` only when the user explicitly requests a preview/confirmation gate. Do not synthesize or rewrite `reasonCodes`, `reviewDigest`, or `nextAction`.
 
 ## 5. Apply and verify
 
-After explicit approval:
+For `review.nextAction: apply_now`, continue immediately. For `request_confirmation`, continue only after the user approves the exact current Plan. For `stop`, do not apply:
 
 ```text
 apply_agentic_install_plan(planId)
@@ -145,7 +145,7 @@ Inspect `methodLearning` after every successful apply:
 - a successful `learned_method` reuse should append another Outcome to the same Method revision;
 - a non-null learning warning means the installation committed but reusable knowledge did not persist; report that distinction and do not claim warm-start readiness.
 
-Every warm start still prepares fresh Evidence and Context, re-queries Method scope, calls `instantiate_install_method`, freezes a new Plan, and obtains approval. A learned Method never authorizes direct execution.
+Every warm start still prepares fresh Evidence and Context, re-queries Method scope, calls `instantiate_install_method`, freezes a new Plan, and classifies it independently. A learned Method never bypasses fresh planning or risk classification.
 
 ## 6. Stable error behavior
 
@@ -159,7 +159,7 @@ Every warm start still prepares fresh Evidence and Context, re-queries Method sc
 | `OPERATION_CAPABILITY_MISSING` | Stop before game writes; report the missing generic executor capability. |
 | `PROCESS_SIDE_EFFECT_SCOPE_UNPROVEN` | Do not widen roots speculatively; gather better evidence and freeze a new Plan. |
 | `INSTALL_CONFLICT` / `PROTECTED_PATH` | Report the exact conflict; never bypass path policy. |
-| `PLAN_STALE` | Re-freeze, display, and obtain new approval. |
+| `PLAN_STALE` | Re-freeze, display, and reclassify; continue automatically only if the new Plan is `auto_safe`. |
 | `GAME_PROCESS_RUNNING` | Ask the user to close the reported process. |
 | `VERIFY_FAILED` | Do not claim success; report rollback or recovery state. |
 | `RECOVERY_REQUIRED` | Recover the exact transaction with `rollback_mod_install`. |

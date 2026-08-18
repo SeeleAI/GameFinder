@@ -22,6 +22,10 @@ import {
 } from "./conflict-detector.js";
 import { validateOperationReversibility } from "../reversibility.js";
 import type { PlanStore } from "../storage/plan-store.js";
+import {
+  createPlanReview,
+  type PlanReviewMode,
+} from "../../plan-review.js";
 
 export interface InstallPlanResult {
   plan: Readonly<InstallPlan>;
@@ -82,6 +86,7 @@ export async function planModInstall(input: {
   planStore: PlanStore;
   ownership?: ReadonlyArray<ManagedPathOwnership>;
   ttlMs?: number;
+  reviewMode?: PlanReviewMode;
 }): Promise<InstallPlanResult> {
   if (
     input.analysis.archive.sha256 !== input.stagedPackage.archive.sha256 ||
@@ -204,6 +209,41 @@ export async function planModInstall(input: {
       operations: draft.operations,
       conflicts: inspections.map((inspection) => inspection.conflict),
       preconditionStateHash: preconditionStateHash(inspections),
+      review: createPlanReview({
+        classification:
+          input.reviewMode === "always_review" ||
+          draft.operations.some((operation) =>
+            ["replace_file", "replace_managed_tree"].includes(operation.kind),
+          )
+            ? "review_required"
+            : "auto_safe",
+        reasonCodes:
+          input.reviewMode === "always_review"
+            ? ["USER_REQUESTED_REVIEW"]
+            : draft.operations.some((operation) =>
+                  ["replace_file", "replace_managed_tree"].includes(
+                    operation.kind,
+                  ),
+                )
+              ? ["REPLACE_EXISTING_FILE"]
+              : ["BOUNDED_REVERSIBLE_FILE_OPERATION"],
+        ...(input.reviewMode === undefined
+          ? {}
+          : { mode: input.reviewMode }),
+        action: "install",
+        targetIds: [
+          input.analysis.analysisId,
+          input.instance.instanceId,
+          draft.packageUnit.packageUnitId,
+        ],
+        decisionInputs: {
+          operationKinds: draft.operations.map((operation) => operation.kind),
+          operationTargets: draft.operations.map(
+            (operation) => operation.targetRelativePath,
+          ),
+          conflicts: inspections.map((inspection) => inspection.conflict),
+        },
+      }),
     },
     input.ttlMs === undefined ? {} : { ttlMs: input.ttlMs },
   );

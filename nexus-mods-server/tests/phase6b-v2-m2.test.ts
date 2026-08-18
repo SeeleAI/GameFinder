@@ -273,7 +273,11 @@ describe("Phase 6B V2 M2 Agentic planning and file execution", () => {
     });
     const target = path.join(fixture.gameRoot, "Mods", "ExampleUnknownMod");
     expect(await stat(target).catch(() => null)).toBeNull();
-    expect(plan.approval.requiresExplicitConfirmation).toBe(true);
+    expect(plan.review).toMatchObject({
+      classification: "auto_safe",
+      nextAction: "apply_now",
+      reasonCodes: ["BOUNDED_REVERSIBLE_FILE_OPERATION"],
+    });
     expect(plan.operations).toHaveLength(1);
 
     const result = await service.applyPlan(plan.planId);

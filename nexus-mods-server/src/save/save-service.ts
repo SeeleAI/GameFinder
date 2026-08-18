@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { NexusError } from "../errors.js";
 import { sha256CanonicalJson } from "../install/content-hash.js";
+import type { PlanReviewMode } from "../plan-review.js";
 import {
   EldenRingSlotImportService,
 } from "./adapters/elden-ring-slot-import-service.js";
@@ -384,6 +385,7 @@ export class SaveService {
     saveContextId: string;
     mode: SaveRestorePlan["mode"];
     targetKind?: SaveRestorePlan["target"]["kind"];
+    reviewMode?: PlanReviewMode;
   }): Promise<Readonly<SaveRestorePlan>> {
     return await this.#restores.planRestore(input);
   }
@@ -632,14 +634,16 @@ export class SaveService {
   async planSaveReplacement(input: {
     assessmentId: string;
     strategy: "direct_replace";
+    reviewMode?: PlanReviewMode;
   }): Promise<Readonly<SaveReplacementPlan>> {
     return await this.#replacements.planReplacement(input);
   }
 
   async planEldenRingStagedReplacement(
     stagedImportId: string,
+    options: { reviewMode?: PlanReviewMode } = {},
   ): Promise<Readonly<SaveReplacementPlan>> {
-    return await this.#replacements.planStagedSlotImport(stagedImportId);
+    return await this.#replacements.planStagedSlotImport(stagedImportId, options);
   }
 
   async getSaveReplacementPlan(

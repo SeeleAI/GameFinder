@@ -86,6 +86,11 @@ import {
   InstallationDependencyService,
   type InstallationDependencySnapshot,
 } from "./installation-dependency-store.js";
+import {
+  createPlanReview,
+  type PlanReviewMode,
+  type PlanReviewReasonCode,
+} from "../../plan-review.js";
 
 interface ExplicitGameContextInput {
   gameRoot: string;
@@ -626,7 +631,7 @@ export class AgenticInstallService {
 
   async planUninstall(
     installationId: string,
-    options: { ttlMs?: number } = {},
+    options: { ttlMs?: number; reviewMode?: PlanReviewMode } = {},
   ): Promise<UninstallPlanResult> {
     const inspection = await this.inspectUninstall(installationId);
     this.#assertNoActiveDependents(inspection);
@@ -647,6 +652,13 @@ export class AgenticInstallService {
     uninstallPlanId: string,
   ): Promise<ApplyUninstallResult> {
     const plan = await this.#legacy.getUninstallPlan(uninstallPlanId);
+    if (plan.review?.classification === "blocked") {
+      throw new NexusError(
+        "PLAN_REVIEW_BLOCKED",
+        "Uninstall Plan review classification blocks execution.",
+        { details: { uninstallPlanId, reasonCodes: plan.review.reasonCodes } },
+      );
+    }
     const inspection = await this.inspectUninstall(plan.installationId);
     this.#assertNoActiveDependents(inspection);
     return await this.#legacy.applyUninstall(uninstallPlanId);
@@ -1757,6 +1769,7 @@ export class AgenticInstallService {
   async freezePlan(input: {
     proposalId: string;
     ttlMs?: number;
+    reviewMode?: PlanReviewMode;
   }): Promise<InstallPlanV2> {
     const proposal = await this.#objects.getProposal(input.proposalId);
     if (proposal.unresolvedChoices.length > 0) {
@@ -1941,15 +1954,15 @@ export class AgenticInstallService {
             ],
           },
           risk: proposal.risk,
-          approval: {
-            requiresExplicitConfirmation: true,
-            approvalDigest: sha256CanonicalJson({
-              proposalId: proposal.proposalId,
-              gameRoot: context.instance.gameRoot,
-              operation: frozenOperation,
-              conflicts,
-            }),
-          },
+          review: this.#installPlanReview({
+            ...(input.reviewMode === undefined
+              ? {}
+              : { reviewMode: input.reviewMode }),
+            proposal,
+            operations: [frozenOperation],
+            conflicts,
+            reversibilityLevel: proposedInstaller.reversibilityLevel,
+          }),
           preconditionStateHash: frozenPreconditionHash,
         };
         const plan = installPlanV2Schema.parse({
@@ -2307,15 +2320,20 @@ export class AgenticInstallService {
           ],
         },
         risk: proposal.risk,
-        approval: {
-          requiresExplicitConfirmation: true,
-          approvalDigest: sha256CanonicalJson({
-            proposalId: proposal.proposalId,
-            gameRoot: context.instance.gameRoot,
-            operations: finalizedOperations,
-            conflicts: inspections.map((item) => item.conflict),
-          }),
-        },
+        review: this.#installPlanReview({
+          ...(input.reviewMode === undefined
+            ? {}
+            : { reviewMode: input.reviewMode }),
+          proposal,
+          operations: finalizedOperations,
+          conflicts: inspections.map((inspection) => ({
+            target: inspection.targetRelativePath,
+            kind: inspection.conflict.kind,
+            blocking: inspection.conflict.blocking,
+            message: inspection.conflict.message,
+          })),
+          reversibilityLevel: "full",
+        }),
         preconditionStateHash: preconditionStateHash(inspections),
       };
       const plan = installPlanV2Schema.parse({
@@ -2336,6 +2354,79 @@ export class AgenticInstallService {
       await stagingManager.cleanup(staged.stagingId).catch(() => undefined);
       throw error;
     }
+  }
+
+  #installPlanReview(input: {
+    reviewMode?: PlanReviewMode;
+    proposal: InstallProposal;
+    operations: InstallPlanV2["operations"];
+    conflicts: InstallPlanV2["conflicts"];
+    reversibilityLevel: InstallPlanV2["reversibility"]["level"];
+  }) {
+    const reasons: PlanReviewReasonCode[] = [];
+    let classification: "auto_safe" | "review_required" | "blocked" =
+      "auto_safe";
+    if (input.conflicts.some((conflict) => conflict.blocking)) {
+      classification = "blocked";
+      reasons.push("BLOCKING_CONFLICT");
+    } else {
+      if (input.reviewMode === "always_review") {
+        classification = "review_required";
+        reasons.push("USER_REQUESTED_REVIEW");
+      }
+      if (
+        input.operations.some(
+          (operation) => operation.kind === "run_bundled_installer",
+        )
+      ) {
+        classification = "review_required";
+        reasons.push("CONTROLLED_INSTALLER");
+      }
+      if (
+        input.operations.some((operation) =>
+          ["replace_file", "replace_managed_tree"].includes(operation.kind),
+        )
+      ) {
+        classification = "review_required";
+        reasons.push("REPLACE_EXISTING_FILE");
+      }
+      if (input.proposal.risk.level === "high") {
+        classification = "review_required";
+        reasons.push("HIGH_RISK_PLAN");
+      }
+      if (input.reversibilityLevel === "manual_recovery") {
+        classification = "review_required";
+        reasons.push("MANUAL_RECOVERY");
+      }
+    }
+    if (reasons.length === 0) {
+      reasons.push("BOUNDED_REVERSIBLE_FILE_OPERATION");
+    }
+    return createPlanReview({
+      classification,
+      reasonCodes: reasons,
+      ...(input.reviewMode === undefined
+        ? {}
+        : { mode: input.reviewMode }),
+      action: "install",
+      targetIds: [
+        input.proposal.proposalId,
+        input.proposal.evidenceBinding.evidencePackId,
+        input.proposal.gameBinding.gameContextId,
+        input.proposal.selection.packageUnitId,
+      ],
+      decisionInputs: {
+        operationKinds: input.operations.map((operation) => operation.kind),
+        operationTargets: input.operations.flatMap((operation) =>
+          operation.kind === "run_bundled_installer"
+            ? operation.declaredWriteRoots.map((root) => root.path)
+            : [operation.targetRelativePath],
+        ),
+        conflicts: input.conflicts,
+        risk: input.proposal.risk,
+        reversibilityLevel: input.reversibilityLevel,
+      },
+    });
   }
 
   async getPlan(
@@ -2365,6 +2456,13 @@ export class AgenticInstallService {
       }
   > {
     const plan = await this.#objects.getPlan(planId);
+    if (plan.review?.classification === "blocked") {
+      throw new NexusError(
+        "PLAN_REVIEW_BLOCKED",
+        "Install Plan review classification blocks execution.",
+        { details: { planId, reasonCodes: plan.review.reasonCodes } },
+      );
+    }
     if (plan.operations[0]?.kind === "run_bundled_installer") {
       try {
         await this.#objects.getInstallerRecordByPlan(planId);

@@ -15,7 +15,7 @@ For each node in `installOrder`:
 3. Prepare an Evidence Pack with `bundlePath + bundleNodeId`; do not downgrade it to an unbound Archive input.
 4. Follow `proposalReadiness.recommendedAction`; re-probe a matching registered Profile or stop before Proposal when instructed.
 5. Reuse a verified Method or derive a bounded Agent file Proposal only when permitted.
-6. Freeze, display, approve, apply, and verify as a separate transaction.
+6. Freeze, display, classify, apply, and verify as a separate transaction. Default to `auto_safe`; pause only for `review_required` or `blocked`.
 7. Stop before dependents if the node fails or remains below the dependent's required verification level.
 
 Generate Plans sequentially because earlier dependency writes change filesystem pre-state.

@@ -21,6 +21,12 @@ import {
   installProposalDraftSchema
 } from "./install/v2/index.js";
 import { NexusClient } from "./nexus-client.js";
+import {
+  effectivePlanReview,
+  planReviewModeSchema,
+  type PlanReview,
+  type PlanReviewAction
+} from "./plan-review.js";
 import type { SaveEnvironment } from "./save/context/environment.js";
 import type { SaveSourceFetch } from "./save/source/save-source-service.js";
 import {
@@ -48,6 +54,29 @@ function ok(summary: string, structuredContent: Record<string, unknown>): CallTo
     content: [{ type: "text", text: summary }],
     structuredContent
   };
+}
+
+function reviewForPlan(input: {
+  review: PlanReview | undefined;
+  action: PlanReviewAction;
+  targetIds: string[];
+  planHash: string;
+}): PlanReview {
+  return effectivePlanReview(input.review, {
+    action: input.action,
+    targetIds: input.targetIds,
+    planHash: input.planHash
+  });
+}
+
+function reviewSummary(label: string, planId: string, review: PlanReview): string {
+  if (review.nextAction === "apply_now") {
+    return `${label} ${planId} is auto_safe and may be applied in the same turn.`;
+  }
+  if (review.nextAction === "request_confirmation") {
+    return `${label} ${planId} is review_required and needs confirmation of this exact current Plan.`;
+  }
+  return `${label} ${planId} is blocked and must not be applied.`;
 }
 
 async function safe(run: () => Promise<CallToolResult>): Promise<CallToolResult> {
@@ -84,6 +113,8 @@ function installErrorNextAction(code: string): string | null {
       "Stop installation and inspect the archive source; do not bypass archive safety checks.",
     ARCHIVE_LIMIT_EXCEEDED:
       "Stop and review the archive size and entry count before changing configured limits.",
+    PLAN_REVIEW_BLOCKED:
+      "Do not apply this Plan; resolve its review reason codes and generate a fresh Plan.",
     GAME_PROFILE_NOT_FOUND:
       "Call list_game_profiles and choose a registered profile.",
     GAME_INSTANCE_NOT_FOUND:
@@ -287,7 +318,7 @@ export function createNexusMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, bounded local installation, managed file-Mod uninstall, and Windows game-save management. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact plan review, explicit approval, and apply_agentic_install_plan(planId). Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and approval. For uninstall, call inspect_mod_uninstall, stop on any blocker, freeze with plan_mod_uninstall, show the exact stored plan with get_mod_uninstall_plan, and call apply_mod_uninstall only after explicit approval of that uninstallPlanId. Re-run verify_mod_uninstall after apply. Active required dependents always block both planning and apply. For saves, create and verify an immutable Save Backup, freeze and show the exact Restore Plan, obtain explicit approval of its restorePlanId, then apply only that ID; use sandbox targets for validation and never substitute shell copy commands. Never replace MCP installation, uninstall, or save-restore tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall or save recovery."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, bounded local installation, managed file-Mod uninstall, and Windows game-save management. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact Plan display, deterministic review classification, and apply_agentic_install_plan(planId). Apply auto_safe Plans in the same turn, request confirmation only for review_required Plans, and never apply blocked Plans. Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and review classification. For uninstall, call inspect_mod_uninstall, stop on any blocker, freeze with plan_mod_uninstall, show the exact stored plan with get_mod_uninstall_plan, and follow review.nextAction. Re-run verify_mod_uninstall after apply. Active required dependents always block both planning and apply. For saves, create and verify an immutable Save Backup, freeze and show the exact Restore or Replacement Plan, and follow review.nextAction; use sandbox targets for validation and never substitute shell copy commands. Never replace MCP installation, uninstall, or save-restore tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall or save recovery."
     }
   );
 
@@ -607,23 +638,32 @@ export function createNexusMcpServer(
         backupId: z.string().uuid(),
         saveContextId: z.string().uuid(),
         mode: z.enum(["overlay", "exact_managed_snapshot"]).default("overlay"),
-        targetKind: z.enum(["save-context", "sandbox"]).default("save-context")
+        targetKind: z.enum(["save-context", "sandbox"]).default("save-context"),
+        reviewMode: planReviewModeSchema.default("auto_safe")
       },
       annotations: localStateAnnotations
     },
-    async ({ backupId, saveContextId, mode, targetKind }) =>
+    async ({ backupId, saveContextId, mode, targetKind, reviewMode }) =>
       safe(async () => {
         const plan = await (await saves()).planSaveRestore({
           backupId,
           saveContextId,
           mode,
-          targetKind
+          targetKind,
+          reviewMode
+        });
+        const review = reviewForPlan({
+          review: plan.review,
+          action: "restore",
+          targetIds: [plan.backupId, plan.saveContextId, plan.target.rootId],
+          planHash: plan.planHash
         });
         return ok(
-          `Frozen Save Restore Plan ${plan.restorePlanId} with ${plan.operations.length} operation(s); explicit approval is required.`,
+          `Frozen Save Restore Plan ${plan.restorePlanId} with ${plan.operations.length} operation(s). ${reviewSummary("Restore Plan", plan.restorePlanId, review)}`,
           {
             ok: true,
             plan,
+            review,
             meta: meta("local", null, [
               "No target files were modified.",
               targetKind === "sandbox"
@@ -640,7 +680,7 @@ export function createNexusMcpServer(
     {
       title: "Get one game save Restore Plan",
       description:
-        "Read and hash-verify one immutable, unexpired Save Restore Plan for explicit review before approval.",
+        "Read and hash-verify one immutable, unexpired Save Restore Plan and its deterministic review classification.",
       inputSchema: {
         restorePlanId: z.string().uuid()
       },
@@ -649,9 +689,16 @@ export function createNexusMcpServer(
     async ({ restorePlanId }) =>
       safe(async () => {
         const plan = await (await saves()).getSaveRestorePlan(restorePlanId);
-        return ok(`Retrieved Save Restore Plan ${restorePlanId}.`, {
+        const review = reviewForPlan({
+          review: plan.review,
+          action: "restore",
+          targetIds: [plan.backupId, plan.saveContextId, plan.target.rootId],
+          planHash: plan.planHash
+        });
+        return ok(`Retrieved Save Restore Plan ${restorePlanId}. ${reviewSummary("Restore Plan", restorePlanId, review)}`, {
           ok: true,
           plan,
+          review,
           meta: meta("local", null)
         });
       })
@@ -660,9 +707,9 @@ export function createNexusMcpServer(
   server.registerTool(
     "apply_save_restore",
     {
-      title: "Apply one approved game save Restore Plan",
+      title: "Apply one executable game save Restore Plan",
       description:
-        "Apply only one exact, previously reviewed restorePlanId through locking, rescue backup for live targets, staging, durable journaling, static verification, and automatic rollback. Accepts no mutable paths or operations.",
+        "Apply only one exact restorePlanId through locking, rescue backup for live targets, staging, durable journaling, static verification, and automatic rollback. Auto-safe Plans may execute in the same turn; review-required Plans require confirmation; blocked Plans must not be applied. Accepts no mutable paths or operations.",
       inputSchema: {
         restorePlanId: z.string().uuid()
       },
@@ -676,6 +723,16 @@ export function createNexusMcpServer(
     async ({ restorePlanId }) =>
       safe(async () => {
         const result = await (await saves()).applySaveRestore(restorePlanId);
+        const review = reviewForPlan({
+          review: result.plan.review,
+          action: "restore",
+          targetIds: [
+            result.plan.backupId,
+            result.plan.saveContextId,
+            result.plan.target.rootId
+          ],
+          planHash: result.plan.planHash
+        });
         return ok(
           result.idempotentReplay
             ? `Restore Plan ${restorePlanId} was already committed; returned its existing operation record.`
@@ -683,6 +740,7 @@ export function createNexusMcpServer(
           {
             ok: true,
             ...result,
+            review,
             meta: meta("local", null, [
               result.plan.target.kind === "sandbox"
                 ? "The live Save Context was not modified."
@@ -1323,15 +1381,33 @@ export function createNexusMcpServer(
     "plan_elden_ring_staged_replacement",
     {
       title: "Freeze a live Replacement Plan from an Elden Ring staged import",
-      description: "Verify one staged slot import, freeze it in content-addressed storage, snapshot the live ER0000.sl2 prestate plus preserved .bak/cloud files, and create an immutable slot_import Replacement Plan. Does not modify the live save; explicit approval is required before apply_save_replacement.",
-      inputSchema: { stagedImportId: z.string().uuid() },
+      description: "Verify one staged slot import, freeze it in content-addressed storage, snapshot the live ER0000.sl2 prestate plus preserved .bak/cloud files, and create an immutable slot_import Replacement Plan with a deterministic review classification. Planning does not modify the live save.",
+      inputSchema: {
+        stagedImportId: z.string().uuid(),
+        reviewMode: planReviewModeSchema.default("auto_safe")
+      },
       annotations: localStateAnnotations
     },
-    async ({ stagedImportId }) => safe(async () => {
-      const plan = await (await saves()).planEldenRingStagedReplacement(stagedImportId);
-      return ok(`Frozen Elden Ring Replacement Plan ${plan.replacementPlanId}; explicit approval is required.`, {
+    async ({ stagedImportId, reviewMode }) => safe(async () => {
+      const plan = await (await saves()).planEldenRingStagedReplacement(
+        stagedImportId,
+        { reviewMode }
+      );
+      const review = reviewForPlan({
+        review: plan.review,
+        action: "replace",
+        targetIds: [
+          plan.stagedImportId ?? stagedImportId,
+          plan.packageId,
+          plan.saveContextId,
+          String(plan.targetSlot)
+        ],
+        planHash: plan.planHash
+      });
+      return ok(`Frozen Elden Ring Replacement Plan ${plan.replacementPlanId}. ${reviewSummary("Replacement Plan", plan.replacementPlanId, review)}`, {
         ok: true,
         plan,
+        review,
         meta: meta("local", null, [
           "No live save files were modified.",
           "Apply requires stopped game and Steam processes and creates a verified pre-replacement rescue backup."
@@ -1367,18 +1443,30 @@ export function createNexusMcpServer(
         "For an exact compatible_direct assessment, snapshot live target preconditions and freeze a same-account direct_replace plan. M3 rejects account rewriting and slot import. Planning does not modify the target.",
       inputSchema: {
         assessmentId: z.string().uuid(),
-        strategy: z.literal("direct_replace")
+        strategy: z.literal("direct_replace"),
+        reviewMode: planReviewModeSchema.default("auto_safe")
       },
       annotations: localStateAnnotations
     },
-    async ({ assessmentId, strategy }) =>
+    async ({ assessmentId, strategy, reviewMode }) =>
       safe(async () => {
-        const plan = await (await saves()).planSaveReplacement({ assessmentId, strategy });
+        const plan = await (await saves()).planSaveReplacement({
+          assessmentId,
+          strategy,
+          reviewMode
+        });
+        const review = reviewForPlan({
+          review: plan.review,
+          action: "replace",
+          targetIds: [plan.packageId, plan.saveContextId, plan.compatibilityAssessmentId],
+          planHash: plan.planHash
+        });
         return ok(
-          `Frozen Save Replacement Plan ${plan.replacementPlanId} with ${plan.operations.length} operation(s); explicit approval is required.`,
+          `Frozen Save Replacement Plan ${plan.replacementPlanId} with ${plan.operations.length} operation(s). ${reviewSummary("Replacement Plan", plan.replacementPlanId, review)}`,
           {
             ok: true,
             plan,
+            review,
             meta: meta("local", null, [
               "No target files were modified.",
               "Apply will require game and Steam processes stopped and a verified pre-replacement rescue backup."
@@ -1393,16 +1481,23 @@ export function createNexusMcpServer(
     {
       title: "Get one Save Replacement Plan",
       description:
-        "Read and hash-verify one immutable, unexpired Save Replacement Plan for explicit review.",
+        "Read and hash-verify one immutable, unexpired Save Replacement Plan and its deterministic review classification.",
       inputSchema: { replacementPlanId: z.string().uuid() },
       annotations: localReadOnlyAnnotations
     },
     async ({ replacementPlanId }) =>
       safe(async () => {
         const plan = await (await saves()).getSaveReplacementPlan(replacementPlanId);
-        return ok(`Retrieved Save Replacement Plan ${replacementPlanId}.`, {
+        const review = reviewForPlan({
+          review: plan.review,
+          action: "replace",
+          targetIds: [plan.packageId, plan.saveContextId, plan.compatibilityAssessmentId],
+          planHash: plan.planHash
+        });
+        return ok(`Retrieved Save Replacement Plan ${replacementPlanId}. ${reviewSummary("Replacement Plan", replacementPlanId, review)}`, {
           ok: true,
           plan,
+          review,
           meta: meta("local", null)
         });
       })
@@ -1411,9 +1506,9 @@ export function createNexusMcpServer(
   server.registerTool(
     "apply_save_replacement",
     {
-      title: "Apply one approved Save Replacement Plan",
+      title: "Apply one executable Save Replacement Plan",
       description:
-        "Apply only one exact replacementPlanId through lock, mandatory verified rescue backup, staging, durable journal, atomic file replacement, static verification, and automatic rollback. Accepts no mutable paths or operations.",
+        "Apply only one exact replacementPlanId through lock, mandatory verified rescue backup, staging, durable journal, atomic file replacement, static verification, and automatic rollback. Auto-safe Plans may execute in the same turn; review-required Plans require confirmation; blocked Plans must not be applied. Accepts no mutable paths or operations.",
       inputSchema: { replacementPlanId: z.string().uuid() },
       annotations: {
         readOnlyHint: false,
@@ -1425,6 +1520,16 @@ export function createNexusMcpServer(
     async ({ replacementPlanId }) =>
       safe(async () => {
         const result = await (await saves()).applySaveReplacement(replacementPlanId);
+        const review = reviewForPlan({
+          review: result.plan.review,
+          action: "replace",
+          targetIds: [
+            result.plan.packageId,
+            result.plan.saveContextId,
+            result.plan.compatibilityAssessmentId
+          ],
+          planHash: result.plan.planHash
+        });
         return ok(
           result.idempotentReplay
             ? `Replacement Plan ${replacementPlanId} was already committed; returned its operation record.`
@@ -1432,6 +1537,7 @@ export function createNexusMcpServer(
           {
             ok: true,
             ...result,
+            review,
             meta: meta("local", null, [
               "Keep Steam offline. In-game runtime verification has not run.",
               "Preserve the rescueBackupId until the baseline has been restored and verified."
@@ -2331,7 +2437,7 @@ export function createNexusMcpServer(
         writableRoots: z
           .array(z.string().trim().min(1))
           .optional()
-          .describe("Game-root-relative roots that an approved plan may modify."),
+          .describe("Game-root-relative roots that a frozen executable Plan may modify."),
         protectedRoots: z.array(z.string().trim().min(1)).optional(),
         liveModRoots: z.array(z.string().trim().min(1)).optional(),
         knownProcessNames: z.array(z.string().trim().min(1)).optional(),
@@ -2764,10 +2870,11 @@ export function createNexusMcpServer(
     {
       title: "Freeze a Contract V2 Install Plan",
       description:
-        "Revalidate exact Proposal, Evidence, archive, game boundaries, operations, conflicts, and reversibility, then freeze an immutable approval digest. Writes only manager staging and plan state; does not modify the game.",
+        "Revalidate exact Proposal, Evidence, archive, game boundaries, operations, conflicts, and reversibility, then freeze an immutable Plan with a deterministic review classification. Writes only manager staging and plan state; does not modify the game.",
       inputSchema: {
         proposalId: z.string().uuid(),
-        ttlMs: z.number().int().min(60_000).max(86_400_000).optional()
+        ttlMs: z.number().int().min(60_000).max(86_400_000).optional(),
+        reviewMode: planReviewModeSchema.default("auto_safe")
       },
       annotations: {
         readOnlyHint: false,
@@ -2776,22 +2883,35 @@ export function createNexusMcpServer(
         openWorldHint: false
       }
     },
-    async ({ proposalId, ttlMs }) =>
+    async ({ proposalId, ttlMs, reviewMode }) =>
       safe(async () => {
         const plan = await (
           await agenticInstalls()
         ).freezePlan({
           proposalId,
+          reviewMode,
           ...(ttlMs === undefined ? {} : { ttlMs })
         });
+        const review = reviewForPlan({
+          review: plan.review,
+          action: "install",
+          targetIds: [
+            plan.strategyBinding.proposalId,
+            plan.evidenceBinding.evidencePackId,
+            plan.gameBinding.gameContextId,
+            plan.selection.packageUnitId
+          ],
+          planHash: plan.planHash
+        });
         return ok(
-          `Frozen Install Plan ${plan.planId} with ${plan.operations.length} operations; explicit approval is required.`,
+          `Frozen Install Plan ${plan.planId} with ${plan.operations.length} operations. ${reviewSummary("Install Plan", plan.planId, review)}`,
           {
             ok: true,
             plan,
+            review,
             meta: meta("local", null, [
               "The game directory is unchanged.",
-              "Show the plan targets, conflicts, risk, reversibility, and approval digest before apply."
+              "Show the Plan targets, conflicts, risk, reversibility, and review decision before following review.nextAction."
             ])
           }
         );
@@ -2812,9 +2932,21 @@ export function createNexusMcpServer(
     async ({ planId }) =>
       safe(async () => {
         const plan = await (await agenticInstalls()).getPlan(planId);
-        return ok(`Retrieved Contract V2 Install Plan ${planId}.`, {
+        const review = reviewForPlan({
+          review: plan.review,
+          action: "install",
+          targetIds: [
+            plan.strategyBinding.proposalId,
+            plan.evidenceBinding.evidencePackId,
+            plan.gameBinding.gameContextId,
+            plan.selection.packageUnitId
+          ],
+          planHash: plan.planHash
+        });
+        return ok(`Retrieved Contract V2 Install Plan ${planId}. ${reviewSummary("Install Plan", planId, review)}`, {
           ok: true,
           plan,
+          review,
           meta: meta("local", null)
         });
       })
@@ -2823,9 +2955,9 @@ export function createNexusMcpServer(
   server.registerTool(
     "apply_agentic_install_plan",
     {
-      title: "Apply one approved Contract V2 Install Plan",
+      title: "Apply one executable Contract V2 Install Plan",
       description:
-        "Apply one exact, previously reviewed Contract V2 planId through the existing transactional backup, journal, verification, and rollback engine. Accepts no mutable operation fields.",
+        "Apply one exact Contract V2 planId through the existing transactional backup, journal, verification, and rollback engine. Auto-safe Plans may execute in the same turn; review-required Plans require confirmation; blocked Plans are rejected. Accepts no mutable operation fields.",
       inputSchema: {
         planId: z.string().uuid()
       },
@@ -2839,12 +2971,24 @@ export function createNexusMcpServer(
     async ({ planId }) =>
       safe(async () => {
         const result = await (await agenticInstalls()).applyPlan(planId);
+        const review = reviewForPlan({
+          review: result.plan.review,
+          action: "install",
+          targetIds: [
+            result.plan.strategyBinding.proposalId,
+            result.plan.evidenceBinding.evidencePackId,
+            result.plan.gameBinding.gameContextId,
+            result.plan.selection.packageUnitId
+          ],
+          planHash: result.plan.planHash
+        });
         if (result.executionKind === "installer") {
           const response = ok(
             `Applied controlled-installer plan ${planId}; resulting state is ${result.record.state}.`,
             {
               ok: result.record.state === "installed",
               planId,
+              review,
               executionKind: result.executionKind,
               installation: result.record,
               methodLearning: result.methodLearning,
@@ -2866,6 +3010,7 @@ export function createNexusMcpServer(
           {
             ok: true,
             planId,
+            review,
             executionKind: result.executionKind,
             executionBridgePlanId: result.bridgePlanId,
             installation: {
@@ -3066,7 +3211,7 @@ export function createNexusMcpServer(
     {
       title: "Plan one deterministic Mod installation",
       description:
-        "Verify the archive and receipt, probe the exact game root, stage only the selected package under manager state, and freeze a dry-run Install Plan. Does not modify the game. Review the returned operations and conflicts before apply_mod_install.",
+        "Verify the archive and receipt, probe the exact game root, stage only the selected package under manager state, and freeze a dry-run Install Plan with a deterministic review classification. Does not modify the game.",
       inputSchema: {
         archivePath: z.string().min(3),
         receiptPath: z.string().min(3),
@@ -3077,7 +3222,8 @@ export function createNexusMcpServer(
           .trim()
           .min(1)
           .optional()
-          .describe("Required only when inspection reports multiple package units.")
+          .describe("Required only when inspection reports multiple package units."),
+        reviewMode: planReviewModeSchema.default("auto_safe")
       },
       annotations: {
         readOnlyHint: false,
@@ -3086,7 +3232,7 @@ export function createNexusMcpServer(
         openWorldHint: false
       }
     },
-    async ({ archivePath, receiptPath, profileId, gameRoot, packageUnitId }) =>
+    async ({ archivePath, receiptPath, profileId, gameRoot, packageUnitId, reviewMode }) =>
       safe(async () => {
         const service = await installs();
         const planned = await service.plan({
@@ -3094,11 +3240,18 @@ export function createNexusMcpServer(
           receiptPath,
           profileId,
           gameRoot,
+          reviewMode,
           ...(packageUnitId === undefined ? {} : { packageUnitId })
         });
         const { plan } = planned.result;
+        const review = reviewForPlan({
+          review: plan.review,
+          action: "install",
+          targetIds: [plan.analysisId, plan.gameInstanceId, planned.result.packageUnit.packageUnitId],
+          planHash: plan.planHash
+        });
         return ok(
-          `Created Install Plan ${plan.planId} for ${planned.result.packageUnit.identity.name ?? planned.result.packageUnit.identity.uniqueId ?? "the selected package"} with ${plan.operations.length} game-directory operations. Review it before apply.`,
+          `Created Install Plan ${plan.planId} for ${planned.result.packageUnit.identity.name ?? planned.result.packageUnit.identity.uniqueId ?? "the selected package"} with ${plan.operations.length} game-directory operations. ${reviewSummary("Install Plan", plan.planId, review)}`,
           {
             ok: true,
             plan: {
@@ -3127,7 +3280,7 @@ export function createNexusMcpServer(
               conflicts: plan.conflicts,
               warnings: planned.result.warnings,
               verificationRequirements: planned.result.verificationRequirements,
-              requiresExplicitApplyConfirmation: true
+              review
             },
             meta: meta("local", null, [
               "Planning writes only manager-owned staging and plan state; the game directory is unchanged.",
@@ -3143,7 +3296,7 @@ export function createNexusMcpServer(
     {
       title: "Apply one frozen Mod Install Plan",
       description:
-        "Apply a previously reviewed Install Plan. Accepts only planId, revalidates receipt, archive, staging, target pre-state, game-process locks, writes, and static verification, and automatically rolls back a failed transaction.",
+        "Apply an exact frozen Install Plan. Auto-safe Plans may execute in the same turn; review-required Plans require confirmation; blocked Plans are rejected. Accepts only planId, revalidates receipt, archive, staging, target pre-state, game-process locks, writes, and static verification, and automatically rolls back a failed transaction.",
       inputSchema: {
         planId: z.string().uuid().describe("The exact immutable planId returned by plan_mod_install.")
       },
@@ -3288,9 +3441,10 @@ export function createNexusMcpServer(
     {
       title: "Freeze a managed Mod Uninstall Plan",
       description:
-        "Recheck active dependents and current managed paths, then freeze a separate immutable Uninstall Plan. Writes manager plan metadata only; it does not modify the game. Review the exact stored plan before approval.",
+        "Recheck active dependents and current managed paths, then freeze a separate immutable Uninstall Plan with a deterministic review classification. Writes manager plan metadata only; it does not modify the game.",
       inputSchema: {
-        installationId: z.string().uuid()
+        installationId: z.string().uuid(),
+        reviewMode: planReviewModeSchema.default("auto_safe")
       },
       annotations: {
         readOnlyHint: false,
@@ -3299,30 +3453,31 @@ export function createNexusMcpServer(
         openWorldHint: false
       }
     },
-    async ({ installationId }) =>
+    async ({ installationId, reviewMode }) =>
       safe(async () => {
         const planned = await (
           await agenticInstalls()
-        ).planUninstall(installationId);
+        ).planUninstall(installationId, { reviewMode });
         const lifecycle = await (
           await agenticInstalls()
         ).getUninstallPlanLifecycle(planned.plan.uninstallPlanId);
+        const review = reviewForPlan({
+          review: planned.plan.review,
+          action: "uninstall",
+          targetIds: [planned.plan.installationId],
+          planHash: planned.plan.uninstallPlanHash
+        });
         return ok(
-          `Frozen Uninstall Plan ${planned.plan.uninstallPlanId}; explicit approval is required before apply.`,
+          `Frozen Uninstall Plan ${planned.plan.uninstallPlanId}. ${reviewSummary("Uninstall Plan", planned.plan.uninstallPlanId, review)}`,
           {
             ok: true,
             plan: planned.plan,
             lifecycle: lifecycle.lifecycle,
             inspection: planned.inspection,
-            approval: {
-              required: true,
-              approved: false,
-              applyTool: "apply_mod_uninstall",
-              uninstallPlanId: planned.plan.uninstallPlanId
-            },
+            review,
             meta: meta("local", null, [
-              "Show every action and retained path to the user before requesting approval.",
-              "Approval applies only to this exact uninstallPlanId."
+              "Show every action and retained path before following review.nextAction.",
+              "The review decision applies only to this exact uninstallPlanId."
             ])
           }
         );
@@ -3345,17 +3500,19 @@ export function createNexusMcpServer(
         const result = await (
           await agenticInstalls()
         ).getUninstallPlanLifecycle(uninstallPlanId);
+        const review = reviewForPlan({
+          review: result.plan.review,
+          action: "uninstall",
+          targetIds: [result.plan.installationId],
+          planHash: result.plan.uninstallPlanHash
+        });
         return ok(
-          `Retrieved Uninstall Plan ${uninstallPlanId}; lifecycle is ${result.lifecycle.state}.`,
+          `Retrieved Uninstall Plan ${uninstallPlanId}; lifecycle is ${result.lifecycle.state}. ${reviewSummary("Uninstall Plan", uninstallPlanId, review)}`,
           {
           ok: true,
           plan: result.plan,
           lifecycle: result.lifecycle,
-          approval: {
-            required: result.lifecycle.state === "planned",
-            applyTool: "apply_mod_uninstall",
-            uninstallPlanId
-          },
+          review,
           meta: meta("local", null)
           }
         );
@@ -3365,9 +3522,9 @@ export function createNexusMcpServer(
   server.registerTool(
     "apply_mod_uninstall",
     {
-      title: "Apply one explicitly approved managed Mod Uninstall Plan",
+      title: "Apply one executable managed Mod Uninstall Plan",
       description:
-        "Apply exactly one previously reviewed Uninstall Plan by UUID. Rechecks active required dependents and all frozen plan/current-state guards before changing the game. Call only after explicit user approval of this exact uninstallPlanId.",
+        "Apply exactly one Uninstall Plan by UUID. Rechecks active required dependents and all frozen plan/current-state guards before changing the game. Auto-safe Plans may execute in the same turn; review-required Plans require confirmation; blocked Plans are rejected.",
       inputSchema: {
         uninstallPlanId: z.string().uuid()
       },
@@ -3386,6 +3543,12 @@ export function createNexusMcpServer(
         const lifecycle = await (
           await agenticInstalls()
         ).getUninstallPlanLifecycle(uninstallPlanId);
+        const review = reviewForPlan({
+          review: lifecycle.plan.review,
+          action: "uninstall",
+          targetIds: [lifecycle.plan.installationId],
+          planHash: lifecycle.plan.uninstallPlanHash
+        });
         return ok(
           `Uninstall Plan ${uninstallPlanId} committed as transaction ${applied.transactionId}.`,
           {
@@ -3399,6 +3562,7 @@ export function createNexusMcpServer(
               retainedFilePaths: applied.retainedFilePaths
             },
             lifecycle: lifecycle.lifecycle,
+            review,
             meta: meta("local", null, [
               "Run verify_mod_uninstall before claiming that managed files were removed.",
               ...(applied.retainedPaths.length > 0

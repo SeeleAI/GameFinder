@@ -40,6 +40,8 @@ Do not run Init against an established repository. Adopt its current structure i
 
 Read [references/research-and-probing.md](references/research-and-probing.md). Read [references/evidence-from-existing-mods.md](references/evidence-from-existing-mods.md) only when the prior cases help interpret the task.
 
+For a ReShade/DataCollector camera Provider, DCCameraPacket, projection-normal, FOV, or camera/world-normal task, also read [references/reshade-camera-provider.md](references/reshade-camera-provider.md).
+
 Use this progressive lookup:
 
 1. Search the project's `docs/interface-matrix.md` for the exact or adjacent capability.
@@ -61,6 +63,8 @@ Treat matrix entries as cached leads, not permanent truth. Actual compile and ru
 ## Do
 
 Read [references/development-patterns.md](references/development-patterns.md) only for patterns relevant to the requested feature.
+
+For a ReShade/DataCollector camera Provider implementation or debug task, also read [references/reshade-camera-provider.md](references/reshade-camera-provider.md) and revalidate its ABI assumptions against the target DataCollector source.
 
 1. Read the current requirement, applicable Research result, project conventions, and related evidence.
 2. Work within the current game, loader, editor, language, and repository structure. Do not impose a generic source architecture.
@@ -97,5 +101,6 @@ Never copy another game's native hashes, coordinates, models, loader bindings, o
 - [references/research-and-probing.md](references/research-and-probing.md): progressive research, evidence, safe probes, and stop conditions.
 - [references/development-patterns.md](references/development-patterns.md): conditional implementation and reliability patterns.
 - [references/evidence-from-existing-mods.md](references/evidence-from-existing-mods.md): evidence boundaries and lessons from the four source projects.
+- [references/reshade-camera-provider.md](references/reshade-camera-provider.md): cross-game DCC2 camera Provider profiles, architecture, coordinate conversion, probing, diagnostics, and acceptance criteria.
 - `scripts/init_mod_project.py`: one-time minimal project initializer.
 - `assets/project-core/`: neutral project-memory templates used by the initializer.

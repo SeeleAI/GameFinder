@@ -30,6 +30,10 @@ import type { SaveContextStore } from "../storage/context-store.js";
 import { ensureRealStoreDirectory } from "../storage/json-store.js";
 import type { SaveCompatibilityAssessor } from "./compatibility-assessor.js";
 import { SaveReplacementPlanStore } from "./save-replacement-plan-store.js";
+import {
+  createPlanReview,
+  type PlanReviewMode,
+} from "../../plan-review.js";
 
 type SavePathState = SaveReplacementPlan["operations"][number]["expectedPreState"];
 
@@ -180,6 +184,7 @@ export class SaveReplacementService {
   async planReplacement(input: {
     assessmentId: string;
     strategy: "direct_replace";
+    reviewMode?: PlanReviewMode;
   }): Promise<Readonly<SaveReplacementPlan>> {
     const assessment = await this.#assessments.get(input.assessmentId);
     if (
@@ -262,10 +267,38 @@ export class SaveReplacementService {
       preconditionStateHash: preconditionHash(target, operations, payloadPolicies),
       operations,
       rescueUnitId: unit.unitId,
+      review: createPlanReview({
+        classification:
+          input.reviewMode === "always_review"
+            ? "review_required"
+            : "auto_safe",
+        reasonCodes:
+          input.reviewMode === "always_review"
+            ? ["USER_REQUESTED_REVIEW"]
+            : ["LIVE_SAVE_TRANSACTION"],
+        ...(input.reviewMode === undefined
+          ? {}
+          : { mode: input.reviewMode }),
+        action: "replace",
+        targetIds: [
+          savePackage.packageId,
+          context.saveContextId,
+          assessment.assessmentId,
+        ],
+        decisionInputs: {
+          strategy: input.strategy,
+          target,
+          operations,
+          payloadPolicies,
+        },
+      }),
     });
   }
 
-  async planStagedSlotImport(stagedImportId: string): Promise<Readonly<SaveReplacementPlan>> {
+  async planStagedSlotImport(
+    stagedImportId: string,
+    options: { reviewMode?: PlanReviewMode } = {},
+  ): Promise<Readonly<SaveReplacementPlan>> {
     const eldenRingSlots = this.#requireEldenRingSlots();
     const staged = await eldenRingSlots.verifyStage(stagedImportId);
     const slotPlan = await eldenRingSlots.getPlan(staged.slotImportPlanId, true);
@@ -339,6 +372,34 @@ export class SaveReplacementService {
       preconditionStateHash: preconditionHash(target, operations, payloadPolicies),
       operations,
       rescueUnitId: unit.unitId,
+      review: createPlanReview({
+        classification:
+          options.reviewMode === "always_review"
+            ? "review_required"
+            : "auto_safe",
+        reasonCodes:
+          options.reviewMode === "always_review"
+            ? ["USER_REQUESTED_REVIEW"]
+            : ["LIVE_SAVE_TRANSACTION"],
+        ...(options.reviewMode === undefined
+          ? {}
+          : { mode: options.reviewMode }),
+        action: "replace",
+        targetIds: [
+          staged.stagedImportId,
+          savePackage.packageId,
+          context.saveContextId,
+          String(slotPlan.targetSlot),
+        ],
+        decisionInputs: {
+          strategy: "slot_import",
+          sourceSlot: slotPlan.sourceSlot,
+          targetSlot: slotPlan.targetSlot,
+          target,
+          operations,
+          payloadPolicies,
+        },
+      }),
     });
   }
 
@@ -362,6 +423,18 @@ export class SaveReplacementService {
       };
     }
     const plan = await this.#plans.get(replacementPlanId);
+    if (plan.review?.classification === "blocked") {
+      throw new NexusError(
+        "PLAN_REVIEW_BLOCKED",
+        "Save Replacement Plan review classification blocks execution.",
+        {
+          details: {
+            replacementPlanId,
+            reasonCodes: plan.review.reasonCodes,
+          },
+        },
+      );
+    }
     const [savePackage, context, assessment] = await Promise.all([
       this.#packages.verify(plan.packageId),
       this.#contexts.getSaveContext(plan.saveContextId),
@@ -429,7 +502,7 @@ export class SaveReplacementService {
       await transaction.append("staged", "All package sources staged and verified.");
       await this.#checkpoint("after_staging", plan, transaction);
       await transaction.append("applying", plan.strategy === "slot_import"
-        ? "Applying approved Elden Ring slot-import replacement operation."
+        ? "Applying frozen Elden Ring slot-import replacement operation."
         : "Applying direct save replacement operations.");
       const unit = this.#unit(context);
       for (const operation of plan.operations) {
@@ -442,7 +515,7 @@ export class SaveReplacementService {
         await assertNoSaveReparsePointTraversal(resolved.saveRoot, resolved.targetAbsolutePath);
         const actualPre = comparableState(await inspectPathState(resolved.targetAbsolutePath));
         if (!statesEqual(actualPre, operation.expectedPreState)) {
-          throw new NexusError("SAVE_TARGET_DRIFTED", "A replacement target changed after approval.");
+          throw new NexusError("SAVE_TARGET_DRIFTED", "A replacement target changed after planning.");
         }
         await mkdir(path.dirname(resolved.targetAbsolutePath), { recursive: true });
         const rollbackPath =
@@ -641,7 +714,7 @@ export class SaveReplacementService {
       plan.operations[0]?.expectedPostState.kind !== "file" ||
       plan.operations[0].expectedPostState.sha256 !== staged.stagedSha256
     ) {
-      throw new NexusError("SAVE_STAGING_INVALID", "Staged import evidence does not match the approved Replacement Plan.");
+      throw new NexusError("SAVE_STAGING_INVALID", "Staged import evidence does not match the frozen Replacement Plan.");
     }
   }
 

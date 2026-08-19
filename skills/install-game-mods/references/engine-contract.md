@@ -8,7 +8,7 @@
 | Dynamic Game Context | Evidence-backed game identity, exact root, loaders, processes, and path boundaries. | Planning/audit |
 | Installation Method | Reusable, revisioned installation knowledge. | Durable |
 | Install Proposal | One evidence-bound candidate strategy produced by a Method or Agent. | Planning/audit |
-| Install Plan V2 | Frozen operations, pre-state, conflicts, risk, reversibility, and approval digest. | Review/apply/audit |
+| Install Plan V2 | Frozen operations, pre-state, conflicts, risk, reversibility, and deterministic review metadata. | Review/apply/audit |
 
 ## Retained transaction objects
 
@@ -39,4 +39,4 @@ These are not persistent per-Mod Recipes. Method captures reusable knowledge; Pr
 - Installation Records describe actual outcomes.
 - Uninstall derives a new plan from the Record plus current state; it never blindly reverses an old Plan.
 
-Inspection, context probing, Evidence preparation, Proposal validation, and Plan freezing may write manager-owned state but do not modify the game. Apply requires explicit approval of the exact displayed Plan.
+Inspection, context probing, Evidence preparation, Proposal validation, and Plan freezing may write manager-owned state but do not modify the game. Apply always uses the exact displayed Plan. The Skill treats a valid Plan as `auto_safe` by default and uses the explicit install request as authorization; it pauses only when risk classification returns `review_required` or `blocked`.

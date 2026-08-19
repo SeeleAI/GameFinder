@@ -252,6 +252,14 @@ async function prepareInstaller(
     },
   });
   const plan = await service.freezePlan({ proposalId: proposal.proposalId });
+  expect(plan.review).toMatchObject({
+    classification: "review_required",
+    nextAction: "request_confirmation",
+    reasonCodes: expect.arrayContaining([
+      "CONTROLLED_INSTALLER",
+      "HIGH_RISK_PLAN",
+    ]),
+  });
   return { service, plan, target };
 }
 

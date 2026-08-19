@@ -1,6 +1,6 @@
 # Uninstall Result Contract
 
-## Approval request
+## Plan display and classification
 
 Before apply, report:
 
@@ -15,11 +15,12 @@ Uninstall plan ready:
 - Retained files: exact file paths or none
 - Dependencies: no active dependents
 - Plan: uninstallPlanId, lifecycle state and reason, expiresAt
+- Classification: auto_safe, review_required, or blocked; include concrete reasons
 
-The game directory has not been changed. Apply this exact plan?
+The game directory has not been changed. Auto-safe plans will now be applied; review-required plans are waiting for confirmation.
 ```
 
-Do not hide restore operations, retained paths, blockers, or expiry.
+For `auto_safe`, do not end the turn at this display; apply and verify the Plan. Ask the final question only for `review_required`. Do not hide restore operations, retained paths, blockers, or expiry.
 
 ## Success
 

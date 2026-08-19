@@ -1,6 +1,6 @@
 # Installation Result Contract
 
-## Plan review
+## Plan display and classification
 
 Before apply, return:
 
@@ -17,11 +17,12 @@ Installation plan ready:
 - Risk and reversibility: values
 - Verification: static requirements and runtime limitation
 - Plan: planId, expiresAt, approvalDigest
+- Classification: auto_safe, review_required, or blocked; include concrete reasons
 
-The game directory has not been changed. Apply this exact plan?
+The game directory has not been changed. Auto-safe plans will now be applied; review-required plans are waiting for confirmation.
 ```
 
-Do not hide target paths, unresolved choices, or blocking conflicts. Do not expose browser profiles, cookies, authorization, staging, backup, or lock paths.
+For `auto_safe`, do not end the turn at this display; apply and verify the Plan. Ask the final question only for `review_required`. Do not hide target paths, unresolved choices, or blocking conflicts. Do not expose browser profiles, cookies, authorization, staging, backup, or lock paths.
 
 ## Successful file apply
 

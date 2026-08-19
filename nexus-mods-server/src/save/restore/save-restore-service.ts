@@ -33,6 +33,10 @@ import {
   SaveTransactionStore,
   type SaveTransactionWriter,
 } from "./save-transaction-store.js";
+import {
+  createPlanReview,
+  type PlanReviewMode,
+} from "../../plan-review.js";
 
 export type SaveRestoreCheckpoint =
   | "after_journal_created"
@@ -228,6 +232,7 @@ export class SaveRestoreService {
     saveContextId: string;
     mode: SaveRestorePlan["mode"];
     targetKind?: SaveRestorePlan["target"]["kind"];
+    reviewMode?: PlanReviewMode;
   }): Promise<Readonly<SaveRestorePlan>> {
     const [backup, context] = await Promise.all([
       this.#backups.verifyBackup(input.backupId),
@@ -345,6 +350,30 @@ export class SaveRestoreService {
       preconditionStateHash,
       operations,
       rescueUnitId: backup.unitId,
+      review: createPlanReview({
+        classification:
+          input.reviewMode === "always_review"
+            ? "review_required"
+            : "auto_safe",
+        reasonCodes:
+          input.reviewMode === "always_review"
+            ? ["USER_REQUESTED_REVIEW"]
+            : target.kind === "sandbox"
+              ? ["SANDBOX_SAVE_TRANSACTION"]
+              : ["LIVE_SAVE_TRANSACTION"],
+        ...(input.reviewMode === undefined
+          ? {}
+          : { mode: input.reviewMode }),
+        action: "restore",
+        targetIds: [backup.backupId, context.saveContextId, target.rootId],
+        decisionInputs: {
+          target,
+          mode: input.mode,
+          preconditionStateHash,
+          operations,
+          preservedPaths,
+        },
+      }),
     });
   }
 
@@ -364,6 +393,13 @@ export class SaveRestoreService {
       };
     }
     const plan = await this.#plans.get(restorePlanId);
+    if (plan.review?.classification === "blocked") {
+      throw new NexusError(
+        "PLAN_REVIEW_BLOCKED",
+        "Save Restore Plan review classification blocks execution.",
+        { details: { restorePlanId, reasonCodes: plan.review.reasonCodes } },
+      );
+    }
     const [backup, context] = await Promise.all([
       this.#backups.verifyBackup(plan.backupId),
       this.#contexts.getSaveContext(plan.saveContextId),

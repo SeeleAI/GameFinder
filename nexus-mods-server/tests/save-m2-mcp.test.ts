@@ -162,6 +162,13 @@ describe("save M2 MCP workflow", () => {
         targetKind: "sandbox",
       },
     });
+    expect(planned.structuredContent).toMatchObject({
+      review: {
+        classification: "auto_safe",
+        nextAction: "apply_now",
+        requestScope: { mode: "auto_safe", action: "restore" },
+      },
+    });
     const restorePlanId = (planned.structuredContent as {
       plan: { restorePlanId: string };
     }).plan.restorePlanId;
@@ -224,6 +231,13 @@ describe("save M2 MCP workflow", () => {
     const replacementPlan = await client.callTool({
       name: "plan_save_replacement",
       arguments: { assessmentId, strategy: "direct_replace" },
+    });
+    expect(replacementPlan.structuredContent).toMatchObject({
+      review: {
+        classification: "auto_safe",
+        nextAction: "apply_now",
+        requestScope: { mode: "auto_safe", action: "replace" },
+      },
     });
     const replacementPlanId = (replacementPlan.structuredContent as {
       plan: { replacementPlanId: string };

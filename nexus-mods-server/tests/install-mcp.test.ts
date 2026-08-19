@@ -275,7 +275,11 @@ describe("Phase 6B-4 installation MCP", () => {
     expect(planned.structuredContent).toMatchObject({
       ok: true,
       plan: {
-        requiresExplicitApplyConfirmation: true,
+        review: {
+          classification: "auto_safe",
+          nextAction: "apply_now",
+          reasonCodes: ["BOUNDED_REVERSIBLE_FILE_OPERATION"],
+        },
         operations: [
           {
             kind: "install_tree",
@@ -433,14 +437,14 @@ describe("Phase 6B-4 installation MCP", () => {
           }),
         ]),
       },
-      approval: {
-        required: true,
-        approved: false,
-        applyTool: "apply_mod_uninstall",
+      review: {
+        classification: "auto_safe",
+        nextAction: "apply_now",
+        reasonCodes: ["MANAGED_UNINSTALL"],
       },
       lifecycle: {
         state: "planned",
-        reason: "awaiting_approval",
+        reason: "awaiting_apply",
         transactionId: null,
       },
     });
@@ -463,11 +467,12 @@ describe("Phase 6B-4 installation MCP", () => {
       },
       lifecycle: {
         state: "planned",
-        reason: "awaiting_approval",
+        reason: "awaiting_apply",
       },
-      approval: {
-        required: true,
-        uninstallPlanId,
+      review: {
+        classification: "auto_safe",
+        nextAction: "apply_now",
+        reasonCodes: ["MANAGED_UNINSTALL"],
       },
     });
 
@@ -667,7 +672,11 @@ describe("Phase 6B-4 installation MCP", () => {
     expect(frozen.structuredContent).toMatchObject({
       ok: true,
       plan: {
-        approval: { requiresExplicitConfirmation: true },
+        review: {
+          classification: "auto_safe",
+          nextAction: "apply_now",
+          reasonCodes: ["BOUNDED_REVERSIBLE_FILE_OPERATION"],
+        },
         operations: [
           {
             kind: "install_tree",

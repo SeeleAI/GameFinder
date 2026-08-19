@@ -108,6 +108,29 @@ describe("NexusLoginController", () => {
     expect(state.navigations.at(-1)).toBe("https://www.nexusmods.com/eldenring/mods/9531");
   });
 
+  it("accepts an authenticated preferences page whose account-safety banner mentions two-factor authentication", async () => {
+    const state: MutablePageState = {
+      url: "https://www.nexusmods.com/settings/preferences",
+      signals: {
+        hasPasswordField: false,
+        hasLoginForm: false,
+        loginRequiredText: false,
+        captchaText: false,
+        twoFactorText: true,
+        maintenanceText: false
+      },
+      navigations: []
+    };
+    const controller = new NexusLoginController(createBrowser(createPage(state)));
+    const result = await controller.inspectRunningBrowser();
+
+    expect(result).toMatchObject({
+      state: "authenticated",
+      requiresUserInteraction: false,
+      interactionReason: null
+    });
+  });
+
   it("accepts the protected account-security redirect as an authenticated session", async () => {
     const state: MutablePageState = {
       url: "https://users.nexusmods.com/account/security",

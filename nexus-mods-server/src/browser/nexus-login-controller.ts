@@ -93,9 +93,11 @@ async function readSignals(page: Page): Promise<PageSignals> {
       hasLoginForm: loginForms.length > 0,
       loginRequiredText:
         visibleLoginAction ||
+        bodyText.includes("your session has expired") ||
         bodyText.includes("you have to be logged in") ||
         bodyText.includes("you need to log in") ||
         bodyText.includes("please log in again") ||
+        bodyText.includes("please login to continue") ||
         bodyText.includes("sign in to continue"),
       captchaText:
         bodyText.includes("captcha") ||
@@ -266,15 +268,6 @@ export class NexusLoginController {
         interactionReason: "captcha"
       };
     }
-    if (signals.twoFactorText) {
-      return {
-        state: "waiting_for_user",
-        checkedAt,
-        expiresAt: this.#pendingUntil > Date.now() ? new Date(this.#pendingUntil).toISOString() : null,
-        requiresUserInteraction: true,
-        interactionReason: "two_factor"
-      };
-    }
     if (signals.maintenanceText) {
       return {
         state: "authentication_failed",
@@ -282,6 +275,34 @@ export class NexusLoginController {
         expiresAt: null,
         requiresUserInteraction: false,
         interactionReason: null
+      };
+    }
+    if (isProtectedPreferencesUrl(currentUrl)) {
+      if (signals.hasPasswordField || signals.hasLoginForm || signals.loginRequiredText) {
+        const waiting = this.#pendingUntil > Date.now();
+        return {
+          state: waiting ? "waiting_for_user" : "login_required",
+          checkedAt,
+          expiresAt: waiting ? new Date(this.#pendingUntil).toISOString() : null,
+          requiresUserInteraction: waiting,
+          interactionReason: waiting ? "login" : null
+        };
+      }
+      return {
+        state: "authenticated",
+        checkedAt,
+        expiresAt: null,
+        requiresUserInteraction: false,
+        interactionReason: null
+      };
+    }
+    if (signals.twoFactorText) {
+      return {
+        state: "waiting_for_user",
+        checkedAt,
+        expiresAt: this.#pendingUntil > Date.now() ? new Date(this.#pendingUntil).toISOString() : null,
+        requiresUserInteraction: true,
+        interactionReason: "two_factor"
       };
     }
     if (isLoginUrl(currentUrl) || signals.hasPasswordField || signals.hasLoginForm || signals.loginRequiredText) {
@@ -294,7 +315,7 @@ export class NexusLoginController {
         interactionReason: waiting ? "login" : null
       };
     }
-    if (isProtectedPreferencesUrl(currentUrl) || isProtectedAccountSecurityUrl(currentUrl)) {
+    if (isProtectedAccountSecurityUrl(currentUrl)) {
       return {
         state: "authenticated",
         checkedAt,

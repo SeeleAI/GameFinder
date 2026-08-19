@@ -1,6 +1,6 @@
 # nexus-mods-server
 
-Local STDIO MCP server for Nexus Mods research, metadata, requirements, explicitly requested downloads, and evidence-driven transactional installation.
+Local STDIO MCP server for Nexus Mods research, verified downloads, evidence-driven transactional installation and uninstall, and Windows game-save management.
 
 ## Runtime prerequisites
 
@@ -232,9 +232,9 @@ Contract V2 can plan a bounded file-type Mod installation even when the game has
 1. Call `list_game_profiles`, then `probe_game_context` for the exact game root. Use a matching `legacyProfileId`; provide explicit identity and narrowly bounded roots only for an unregistered game. Do not substitute a Nexus numeric game ID for the stable profile/game ID.
 2. Call `prepare_install_evidence` with the exact Archive, matching Nexus receipt, and `gameContextId`.
 3. Call `query_install_methods` and obey `proposalReadiness.recommendedAction`. Re-probe a matching registered profile, stop before Proposal when no package unit exists, reuse a `verified_match`, or derive an evidence-bounded file Proposal only when permitted.
-4. Call `submit_install_proposal`, then `freeze_install_plan`.
-5. Display the returned operations, targets, conflicts, risk, reversibility, approval digest, expiry, and `planId`. The game is still unchanged.
-6. After explicit approval, call `apply_agentic_install_plan` with only that `planId`.
+4. Call `submit_install_proposal`, then `freeze_install_plan`. `reviewMode` defaults to `auto_safe`; use `always_review` only when the user explicitly requests a confirmation gate.
+5. Display the returned operations, targets, conflicts, risk, reversibility, expiry, `planId`, and complete `review` object. The game is still unchanged.
+6. Follow `review.nextAction`: apply the exact `planId` in the same turn for `apply_now`, request confirmation for `request_confirmation`, and do not apply for `stop`.
 7. Call `verify_mod_install` with the resulting `installationId`.
 
 The file executor supports a selected package tree installed under a declared writable root. The controlled-installer executor supports one Evidence-bound `run_bundled_installer` operation with a fixed runtime, arguments, minimal environment, timeout, declared write roots, static postconditions, side-effect observation, durable journal, and bounded recovery. Both paths reject protected paths, stale hashes, unresolved choices, unsupported ownership, and mutable apply arguments.
@@ -242,6 +242,24 @@ The file executor supports a selected package tree installed under a declared wr
 Controlled installers default to `terminalMode: redirected_stdio`. On Windows, an installer that demonstrably requires a real console can use `terminalMode: pseudoterminal`, backed by ConPTY through the optional `node-pty` dependency. This mode does not send input and does not automate interactive choices; it only supplies console semantics and captures a bounded, sanitized combined terminal transcript. Check `query_install_methods.operationCapabilities` before proposing it. If Evidence has no package unit, stop before Proposal instead of inventing selection or entry data. No game- or Mod-specific Adapter is required.
 
 For a source checkout, install dependencies with `pnpm install`. `pnpm-workspace.yaml` explicitly permits the `node-pty` native package build/install step. The published `node-pty` Windows x64 package includes prebuilt ConPTY components, so a local C++ compiler is not normally required. Pseudoterminal mode requires a Windows MCP host with ConPTY support; other hosts continue to support redirected stdio and report the pseudoterminal capability as unavailable.
+
+## Managed Mod uninstall workflow
+
+Public uninstall tools are implemented for committed managed `file_transaction` Installation Records:
+
+1. Resolve one exact active Installation Record, using `find_installed_nexus_mod` when starting from a canonical Nexus Mod URL and game root.
+2. Call `inspect_mod_uninstall`. Active required dependents, dirty managed files, unsupported record kinds, protected ownership, and inconsistent lifecycle state are blockers.
+3. Call `plan_mod_uninstall`, then `get_mod_uninstall_plan` to display the exact delete, backup-restore, empty-directory, and retained-data actions.
+4. Follow `review.nextAction`. Apply only the immutable `uninstallPlanId` for `apply_now` or after confirmation for `request_confirmation`; never apply `stop`.
+5. Call `verify_mod_uninstall` before reporting completion.
+
+Apply revalidates dependency and filesystem state. Unmanaged generated files may be retained and are reported explicitly. This workflow does not remove controlled-installer records, loaders/runtimes, manually installed files, or arbitrary untracked game content.
+
+## Windows game-save workflow
+
+The save tools support registered game/save discovery, external-source inspection, Standard Save Packages, verified content-addressed backups, sandbox or live restore, same-account direct replacement, and Elden Ring staged slot import.
+
+Every live restore or replacement freezes an immutable Plan with deterministic review metadata. Apply rechecks target prestate and stopped-process guards, creates a verified rescue backup before the first target write, verifies the committed result, and rolls back on failure. Static verification does not replace user-observed in-game runtime verification.
 
 ## Browser configuration
 
@@ -341,13 +359,14 @@ Implemented:
 - shared native/browser byte-count, SHA-256, archive, final-path, and receipt verification;
 - safe staging and no-overwrite finalization;
 - `browser_status`;
-- `open_nexus_login`.
+- `open_nexus_login`;
+- Contract V2 file and controlled-installer planning, apply, verification, recovery, and learned Methods;
+- public managed file-Mod uninstall inspection, planning, apply, retained-data reporting, and verification;
+- Windows save discovery, packages, backup, restore, replacement, Elden Ring slot import, rescue, rollback, and verification;
+- deterministic Plan review metadata with `auto_safe`, `review_required`, and `blocked` classifications.
 
 Not yet implemented:
 
-- resumable browser downloads;
-- public Mod uninstall planning/apply tools. The internal transactional uninstall
-  engine remains available, and local Installation Dependency Snapshots are now
-  persisted as the prerequisite for dependent-aware uninstall blocking.
+- resumable browser downloads.
 
 Phase 5 PC-1 through PC-6 are complete. PC-3 passed against the real Nexus Mod through the production MCP chain; PC-4 passed with a real clean Profile; PC-5 uses deterministic controlled pages for conditions that should not be intentionally induced on Nexus. The existing native/NXM backend remains the default.

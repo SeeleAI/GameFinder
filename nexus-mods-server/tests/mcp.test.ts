@@ -18,6 +18,27 @@ let service: NexusMcpService | undefined;
 let client: Client | undefined;
 const temporaryDirectories: string[] = [];
 
+function textContent(result: unknown): string {
+  if (typeof result !== "object" || result === null || !("content" in result) || !Array.isArray(result.content)) {
+    return "";
+  }
+  return result.content
+    .flatMap((item: unknown) => {
+      if (
+        typeof item === "object" &&
+        item !== null &&
+        "type" in item &&
+        item.type === "text" &&
+        "text" in item &&
+        typeof item.text === "string"
+      ) {
+        return [item.text];
+      }
+      return [];
+    })
+    .join("\n");
+}
+
 const quota: QuotaSnapshot = {
   dailyLimit: 20_000,
   dailyRemaining: 19_999,
@@ -273,6 +294,22 @@ describe("MCP protocol", () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([service.server.connect(serverTransport), client.connect(clientTransport)]);
 
+    const listed = await client.listTools();
+    for (const toolName of ["prepare_download", "prepare_nexus_save_download"]) {
+      const tool = listed.tools.find((candidate) => candidate.name === toolName);
+      expect(tool?.outputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          download: {
+            type: "object",
+            properties: {
+              sessionId: { type: "string", format: "uuid" }
+            }
+          }
+        }
+      });
+    }
+
     const nativePrepared = await client.callTool({
       name: "prepare_download",
       arguments: {
@@ -289,6 +326,11 @@ describe("MCP protocol", () => {
         capability: { interactiveNxmAuthorizationRequired: true }
       }
     });
+    const nativeText = textContent(nativePrepared);
+    expect(nativeText).toMatch(/^sessionId: [0-9a-f-]{36}$/m);
+    expect(nativeText).toContain("nextTool: get_download_status");
+    expect(nativeText).not.toContain("authorizationPageUrl");
+    expect(nativeText).not.toContain("nexusFilesUrl");
 
     const prepared = await client.callTool({
       name: "prepare_download",
@@ -307,28 +349,38 @@ describe("MCP protocol", () => {
         file: { fileId: targetFile.fileId }
       }
     });
-    const sessionId = (
+    const structuredSessionId = (
       prepared.structuredContent as { download: { sessionId: string } }
     ).download.sessionId;
+    const preparedText = textContent(prepared);
+    const sessionId = preparedText.match(/^sessionId: ([0-9a-f-]{36})$/m)?.[1];
+    expect(sessionId).toBe(structuredSessionId);
+    expect(preparedText).toContain("nextTool: start_download");
+    expect(preparedText).not.toContain("authorizationPageUrl");
+    expect(preparedText).not.toContain("nexusFilesUrl");
+    expect(sessionId).toBeTruthy();
     const outputDirectory = await mkdtemp(path.join(os.tmpdir(), "nexus-mcp-browser-"));
     temporaryDirectories.push(outputDirectory);
 
     const started = await client.callTool({
       name: "start_download",
-      arguments: { sessionId, outputDirectory }
+      arguments: { sessionId: sessionId!, outputDirectory }
     });
     expect(started.isError).not.toBe(true);
     expect(started.structuredContent).toMatchObject({
       ok: true,
       download: { backend: "persistent_chromium" }
     });
+    expect(started.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "text", text: expect.stringContaining(sessionId!) })
+    ]));
 
     let completed: Awaited<ReturnType<Client["callTool"]>> | undefined;
     const deadline = Date.now() + 2_000;
     while (Date.now() < deadline) {
       completed = await client.callTool({
         name: "get_download_status",
-        arguments: { sessionId }
+        arguments: { sessionId: sessionId! }
       });
       if (
         (completed.structuredContent as { download?: { state?: string } } | undefined)?.download?.state ===

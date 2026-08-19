@@ -56,6 +56,46 @@ function ok(summary: string, structuredContent: Record<string, unknown>): CallTo
   };
 }
 
+const preparedDownloadOutputSchema = {
+  ok: z.literal(true),
+  download: z.object({
+    sessionId: z.string().uuid().describe("Opaque local session handle required by the next download tool."),
+    backend: z.enum(["native", "persistent_chromium"]),
+    state: z.string(),
+    expiresAt: z.string()
+  }).passthrough(),
+  meta: z.object({}).passthrough()
+};
+
+const preparedSaveDownloadOutputSchema = {
+  ...preparedDownloadOutputSchema,
+  candidateId: z.string().uuid()
+};
+
+function downloadContinuationSummary(
+  summary: string,
+  prepared: {
+    sessionId: string;
+    backend: "native" | "persistent_chromium";
+    state: string;
+    expiresAt: string;
+  }
+): string {
+  const nextTool = prepared.backend === "persistent_chromium"
+    ? "start_download"
+    : prepared.state === "ready"
+      ? "download_mod_file"
+      : "get_download_status";
+  return [
+    summary,
+    "Download continuation (retain these values even if structuredContent is unavailable):",
+    `sessionId: ${prepared.sessionId}`,
+    `backend: ${prepared.backend}`,
+    `nextTool: ${nextTool}`,
+    `expiresAt: ${prepared.expiresAt}`
+  ].join("\n");
+}
+
 function reviewForPlan(input: {
   review: PlanReview | undefined;
   action: PlanReviewAction;
@@ -976,6 +1016,7 @@ export function createNexusMcpServer(
         candidateId: z.string().uuid(),
         backend: z.enum(["native", "persistent_chromium"]).default("native")
       },
+      outputSchema: preparedSaveDownloadOutputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1026,7 +1067,10 @@ export function createNexusMcpServer(
               });
             })();
         sessionBackends.set(prepared.sessionId, backend);
-        return ok(`Prepared exact Nexus save candidate ${candidateId} for ${backend} download.`, {
+        return ok(downloadContinuationSummary(
+          `Prepared exact Nexus save candidate ${candidateId} for ${backend} download.`,
+          prepared
+        ), {
           ok: true,
           candidateId,
           download: prepared,
@@ -2218,6 +2262,7 @@ export function createNexusMcpServer(
         fileId: z.number().int().positive().optional(),
         backend: z.enum(["native", "persistent_chromium"]).default("native")
       },
+      outputSchema: preparedDownloadOutputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -2261,7 +2306,7 @@ export function createNexusMcpServer(
             : prepared.authorizationPageUrl
               ? `Prepared ${file.fileName}. Open the local authorization page, submit the matching NXM link, then call get_download_status.`
               : `Prepared ${file.fileName}; the Premium account can request a download link without interactive NXM authorization.`;
-        return ok(summary, {
+        return ok(downloadContinuationSummary(summary, prepared), {
           ok: true,
           download: prepared,
           meta: meta("nexus-rest-v1", client.lastQuota, [
@@ -2294,7 +2339,7 @@ export function createNexusMcpServer(
           backend === "persistent_chromium"
             ? browserDownloads.status(sessionId)
             : downloads.status(sessionId);
-        return ok(`Download session is ${status.state}.`, {
+        return ok(`Download session ${sessionId} is ${status.state}.`, {
           ok: true,
           download: status,
           meta: meta("local", client.lastQuota)
@@ -2330,7 +2375,7 @@ export function createNexusMcpServer(
           );
         }
         const status = await browserDownloads.start(sessionId, outputDirectory);
-        return ok(`Persistent Chromium download session started with state ${status.state}.`, {
+        return ok(`Persistent Chromium download session ${sessionId} started with state ${status.state}.`, {
           ok: true,
           download: status,
           meta: meta("local", client.lastQuota, [
@@ -2363,7 +2408,7 @@ export function createNexusMcpServer(
           throw new NexusError("INVALID_INPUT", "cancel_download is only for persistent_chromium sessions.");
         }
         const status = await browserDownloads.cancel(sessionId);
-        return ok(`Persistent Chromium download session is ${status.state}.`, {
+        return ok(`Persistent Chromium download session ${sessionId} is ${status.state}.`, {
           ok: true,
           download: status,
           meta: meta("local", client.lastQuota)
@@ -2399,7 +2444,7 @@ export function createNexusMcpServer(
           );
         }
         const receipt = await downloads.download(sessionId, outputDirectory);
-        return ok(`Downloaded ${receipt.fileName} (${receipt.bytes} bytes) and verified SHA-256 ${receipt.sha256}.`, {
+        return ok(`Download session ${sessionId} completed: downloaded ${receipt.fileName} (${receipt.bytes} bytes) and verified SHA-256 ${receipt.sha256}.`, {
           ok: true,
           receipt,
           meta: meta("local", client.lastQuota, ["Archive was not extracted, executed, or installed."])

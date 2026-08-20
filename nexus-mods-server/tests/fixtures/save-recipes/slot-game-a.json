@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 2,
+  "recipeId": "fixture-slot-game-a",
+  "recipeVersion": "1.0.0",
+  "trust": "imported",
+  "game": {
+    "canonicalId": "fixture-slot-game-a",
+    "displayName": "Fixture Slot Game A",
+    "aliases": [],
+    "platformAppIds": { "steam": "900001" }
+  },
+  "identity": {
+    "executableAnchors": ["SlotGameA.exe"],
+    "productNames": ["Fixture Slot Game A"],
+    "fileDescriptions": []
+  },
+  "installResolvers": ["rune-steam-emulator"],
+  "locationStrategies": [
+    {
+      "strategyId": "documents-product-account-subdir",
+      "parameters": { "productDirectory": "Fixture Slot Game A" }
+    }
+  ],
+  "saveUnits": [
+    {
+      "unitId": "main-saves",
+      "layoutFamily": "slot-file-set",
+      "requiredAll": [],
+      "requiredAnyOf": ["auto.sav", "manual_*.sav"],
+      "companions": [],
+      "auxiliary": [],
+      "managedPatterns": ["auto.sav", "manual_*.sav"],
+      "maximumMatches": 20
+    }
+  ],
+  "binding": { "policy": "unknown", "evidenceScope": null },
+  "format": { "kind": "opaque-files", "adapterId": null },
+  "runtime": {
+    "processNames": ["SlotGameA.exe"],
+    "lockSensitiveProcessNames": ["SlotGameA.exe"]
+  },
+  "sources": { "nexusDomainName": null, "speedrunGameSlug": null },
+  "evidence": [
+    {
+      "kind": "imported-catalog",
+      "detail": "Synthetic data-only recipe fixture.",
+      "source": "tests/fixtures/save-recipes/slot-game-a.json",
+      "observedAt": "2026-08-20T00:00:00.000Z"
+    }
+  ],
+  "createdAt": "2026-08-20T00:00:00.000Z",
+  "verifiedAt": "2026-08-20T00:00:00.000Z"
+}

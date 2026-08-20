@@ -35,7 +35,7 @@ All repository-owned Skills live under `skills/`. In particular, `develop-game-m
 | Downloads | Native/NXM and persistent Chromium flows, receipts, dependency plans, and Bundle Manifests |
 | Installation | Contract V2 evidence, reusable Methods, bounded file operations, controlled installers, rollback, and verification |
 | Uninstallation | Public inspect/plan/get/apply/verify tools for committed managed file transactions, including dependent and dirty-file blockers |
-| Game saves | Discovery, packages, verified backups, restore, direct replacement, Elden Ring slot import, rescue, rollback, and runtime evidence |
+| Game saves | Composable discovery Recipes, packages, verified backups, restore, Adapter-validated replacement, Elden Ring slot import, Ghost of Tsushima PC v49 exact replacement, rescue, rollback, and runtime evidence |
 | Mod development | Minimal project memory, interface research, bounded probes, implementation guidance, and reusable cross-game references |
 
 The MCP classifies immutable write plans as:

@@ -76,11 +76,16 @@ interface CandidateDraft {
   metadata: unknown;
 }
 
-function authorClaims(text: string, requirements: ModRequirements): SaveSourceCandidate["claims"] {
+function authorClaims(
+  text: string,
+  requirements: ModRequirements,
+  targetStoreAppId: string | null,
+): SaveSourceCandidate["claims"] {
   const normalized = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   const version = normalized.match(/(?:patch|game\s*version|version|ver\.?)[\s:=-]*([0-9]+(?:\.[0-9]+){1,3})/i)?.[1] ?? null;
-  const dlc = new Set(requirements.dlcRequirements.map((item) => item.name));
-  if (/shadow of the erdtree|\bDLC\b/i.test(normalized)) dlc.add("Shadow of the Erdtree");
+  const dlc = new Set(requirements.dlcRequirements
+    .filter((item) => targetStoreAppId !== null && item.gameId === targetStoreAppId)
+    .map((item) => item.name));
   return {
     progress: /100\s*%|100 percent|complete save|all (?:items|achievements|bosses)|ng\s*\+/i.test(normalized)
       ? normalized.slice(0, 4_000)
@@ -258,7 +263,7 @@ export class SaveSourceService {
           manager: null,
           pageUrl: mod.canonicalUrl,
           status: mod.available && mod.status.toLowerCase() === "published" ? "available" : "unavailable",
-          claims: authorClaims(fullText, requirements),
+          claims: authorClaims(fullText, requirements, input.game.storeAppId),
           metrics,
           updatedAt: file.uploadedAt ?? mod.updatedAt,
           selection: {

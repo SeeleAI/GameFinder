@@ -257,7 +257,9 @@ Apply revalidates dependency and filesystem state. Unmanaged generated files may
 
 ## Windows game-save workflow
 
-The save tools support registered game/save discovery, external-source inspection, Standard Save Packages, verified content-addressed backups, sandbox or live restore, same-account direct replacement, and Elden Ring staged slot import.
+The save tools support composable Windows distribution/location/layout Recipes, external-source inspection, Standard Save Packages V2, operation-scoped Adapter Requirement Assessment, verified content-addressed backups, sandbox or live restore, Adapter-validated exact replacement, and Elden Ring staged slot import. Built-in format support currently includes Elden Ring slot import and validation-scoped Ghost of Tsushima PC v49 exact replacement.
+
+Before external-save replacement, call `assess_save_adapter_requirement`, then `assess_save_package_compatibility`. `undetermined` and `required+missing` block a real Replacement Plan. A missing required Adapter produces a hash-verified Development Brief; missing Resolver, Location Strategy, Layout Family, or Recipe knowledge is reported as that generic extension target instead of being mislabeled as game-specific binary work.
 
 Every live restore or replacement freezes an immutable Plan with deterministic review metadata. Apply rechecks target prestate and stopped-process guards, creates a verified rescue backup before the first target write, verifies the committed result, and rolls back on failure. Static verification does not replace user-observed in-game runtime verification.
 

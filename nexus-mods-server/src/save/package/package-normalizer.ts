@@ -15,16 +15,21 @@ import { sha256File } from "../../install/file-hash.js";
 import type { StandardSavePackage } from "../contracts.js";
 import { standardSavePackageSchema } from "../contracts.js";
 import { ensureRealStoreDirectory } from "../storage/json-store.js";
+import type { GameSaveRecipeRegistryV2 } from "../recipes/recipe-registry.js";
+import type { StandardSavePackageV2 } from "../v2/contracts.js";
+import { computeStandardSavePackageV2Hash, standardSavePackageV2Schema } from "../v2/contracts.js";
 import type { RarCapability } from "./input-inspector.js";
 import { SaveInputInspector } from "./input-inspector.js";
 import {
   StandardSavePackageStore,
   standardPackageIdentityHash,
 } from "./standard-save-package-store.js";
+import { StandardSavePackageV2Store } from "./standard-save-package-v2-store.js";
 
 export interface SavePackageNormalizerOptions {
   managerRoot: string;
   inspector: SaveInputInspector;
+  recipes?: GameSaveRecipeRegistryV2;
 }
 
 export interface SavePackageProvenance {
@@ -96,32 +101,41 @@ async function extractZipSelected(input: {
 export class SavePackageNormalizer {
   readonly #inspector: SaveInputInspector;
   readonly #packages: StandardSavePackageStore;
+  readonly #packagesV2: StandardSavePackageV2Store;
+  readonly #recipes: GameSaveRecipeRegistryV2 | undefined;
   readonly #objects: BackupStore;
   readonly #stagingRoot: string;
 
   private constructor(input: {
     inspector: SaveInputInspector;
     packages: StandardSavePackageStore;
+    packagesV2: StandardSavePackageV2Store;
     objects: BackupStore;
     stagingRoot: string;
+    recipes?: GameSaveRecipeRegistryV2;
   }) {
     this.#inspector = input.inspector;
     this.#packages = input.packages;
+    this.#packagesV2 = input.packagesV2;
+    this.#recipes = input.recipes;
     this.#objects = input.objects;
     this.#stagingRoot = input.stagingRoot;
   }
 
   static async create(options: SavePackageNormalizerOptions): Promise<SavePackageNormalizer> {
-    const [packages, objects, stagingRoot] = await Promise.all([
+    const [packages, packagesV2, objects, stagingRoot] = await Promise.all([
       StandardSavePackageStore.create(options.managerRoot),
+      StandardSavePackageV2Store.create(options.managerRoot),
       BackupStore.create(path.join(options.managerRoot, "save-manager")),
       ensureRealStoreDirectory(options.managerRoot, "normalization-staging"),
     ]);
     return new SavePackageNormalizer({
       inspector: options.inspector,
       packages,
+      packagesV2,
       objects,
       stagingRoot,
+      ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
     });
   }
 
@@ -218,6 +232,88 @@ export class SavePackageNormalizer {
       const payloadTreeHash = sha256CanonicalJson(
         payloadFiles.map(({ relativePath, bytes, sha256 }) => ({ relativePath, bytes, sha256 })),
       );
+      if (candidate.recipe && candidate.layoutFamily) {
+        const recipe = this.#recipes?.findById(candidate.recipe.recipeId);
+        if (!recipe || recipe.recipeHash !== candidate.recipe.recipeHash) {
+          throw new NexusError("SAVE_RECIPE_NOT_FOUND", "The payload candidate Recipe is unavailable or changed.");
+        }
+        const v2Files = candidate.files.map((selected) => {
+          const payload = payloadFiles.find((file) => file.relativePath === selected.relativePath);
+          if (!payload) throw new NexusError("SAVE_PACKAGE_INVALID", "Normalized payload mapping is incomplete.");
+          return {
+            sourcePath: selected.sourcePath,
+            relativePath: selected.relativePath,
+            objectId: payload.objectId,
+            bytes: payload.bytes,
+            sha256: payload.sha256,
+            slot: selected.slot ?? null,
+          };
+        });
+        const packageId = `savepkg-${sha256CanonicalJson({
+          recipe: candidate.recipe,
+          unitId: candidate.unitId,
+          files: v2Files.map(({ sourcePath, relativePath, bytes, sha256, slot }) => ({ sourcePath, relativePath, bytes, sha256, slot })),
+          provenance: input.provenance ?? {
+            kind: "manual",
+            originalInputPath: inspection.input.absolutePath,
+            originalInputSha256: inspection.input.sha256,
+          },
+        })}`;
+        const bindingKind: StandardSavePackageV2["binding"]["kind"] =
+          candidate.binding.kind === "account_bound_unknown" ? "unknown" : candidate.binding.kind;
+        const withoutHash: Omit<StandardSavePackageV2, "manifestHash"> = {
+          schemaVersion: 2,
+          packageId,
+          recipe: candidate.recipe,
+          game: {
+            canonicalId: recipe.game.canonicalId,
+            displayName: recipe.game.displayName,
+            platformAppId: recipe.game.platformAppIds.steam ?? null,
+          },
+          unitId: candidate.unitId,
+          layoutFamily: candidate.layoutFamily,
+          source: {
+            kind: input.provenance?.kind ?? "manual",
+            inspectionId: inspection.inspectionId,
+            pageUrl: input.provenance?.pageUrl ?? null,
+            downloadReceiptId: input.provenance?.downloadReceiptId ?? null,
+            originalInputPath: input.provenance ? null : inspection.input.absolutePath,
+            originalInputSha256: inspection.input.sha256,
+          },
+          claims: input.provenance?.claims ?? {
+            progress: null,
+            gameVersion: null,
+            dlc: [],
+            onlineSafety: "unknown",
+          },
+          payload: { files: v2Files, treeHash: payloadTreeHash },
+          binding: {
+            kind: bindingKind,
+            value: candidate.binding.value,
+            confidence: candidate.binding.kind === "steam_id64"
+              ? "probable"
+              : candidate.binding.kind === "none" ? "confirmed" : "unknown",
+            evidence: candidate.binding.evidence ?? "No package account-binding evidence was established.",
+          },
+          format: {
+            kind: recipe.format.kind,
+            adapterHint: recipe.format.adapterId,
+            evidence: [`Matched Recipe ${recipe.recipeId} unit ${candidate.unitId} without modifying payload bytes.`],
+          },
+          safety: {
+            archiveInspection: inspection.archive ? "passed" : "not-applicable",
+            containsExecutable: false,
+            warnings: inspection.warnings,
+          },
+          createdAt: new Date().toISOString(),
+        };
+        const manifest = standardSavePackageV2Schema.parse({
+          ...withoutHash,
+          manifestHash: computeStandardSavePackageV2Hash(withoutHash),
+        });
+        await this.#verifyOriginalInput(inspection.input);
+        return await this.#packagesV2.save(manifest) as unknown as Readonly<StandardSavePackage>;
+      }
       const identity = {
         game: candidate.game,
         payload: { root: "payload", files: payloadFiles, treeHash: payloadTreeHash },
@@ -266,11 +362,25 @@ export class SavePackageNormalizer {
   }
 
   async get(packageId: string): Promise<Readonly<StandardSavePackage>> {
-    return await this.#packages.get(packageId);
+    try {
+      return await this.#packagesV2.get(packageId) as unknown as Readonly<StandardSavePackage>;
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+      return await this.#packages.get(packageId);
+    }
   }
 
   async verify(packageId: string): Promise<Readonly<StandardSavePackage>> {
-    return await this.#packages.verify(packageId);
+    try {
+      return await this.#packagesV2.get(packageId) as unknown as Readonly<StandardSavePackage>;
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+      return await this.#packages.verify(packageId);
+    }
+  }
+
+  async getV2(packageId: string): Promise<Readonly<StandardSavePackageV2>> {
+    return await this.#packagesV2.get(packageId);
   }
 
   get packageStore(): StandardSavePackageStore {

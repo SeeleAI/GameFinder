@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { NexusError } from "../../errors.js";
 import { sha256CanonicalJson } from "../../install/content-hash.js";
 import type {
   SaveCompatibilityAssessment,
@@ -143,5 +144,42 @@ export class SaveCompatibilityAssessor {
 
   async get(assessmentId: string): Promise<Readonly<SaveCompatibilityAssessment>> {
     return await this.#store.get(assessmentId);
+  }
+
+  async saveV2TransactionBridge(input: {
+    assessmentId: string;
+    packageId: string;
+    packageManifestHash: string;
+    saveContextId: string;
+    reasons: string[];
+    warnings: string[];
+    assessedAt: string;
+  }): Promise<Readonly<SaveCompatibilityAssessment>> {
+    const withoutHash: Omit<SaveCompatibilityAssessment, "assessmentHash"> = {
+      schemaVersion: 1,
+      assessmentId: input.assessmentId,
+      packageId: input.packageId,
+      packageManifestHash: input.packageManifestHash,
+      saveContextId: input.saveContextId,
+      state: "compatible_direct",
+      recommendedStrategy: "direct_replace",
+      reasons: input.reasons,
+      warnings: input.warnings,
+      assessedAt: input.assessedAt,
+    };
+    const bridge = saveCompatibilityAssessmentSchema.parse({
+      ...withoutHash,
+      assessmentHash: sha256CanonicalJson(withoutHash),
+    });
+    try {
+      const existing = await this.#store.get(input.assessmentId);
+      if (existing.assessmentHash !== bridge.assessmentHash) {
+        throw new NexusError("SAVE_PACKAGE_INVALID", "A V2 transaction bridge with the same identity has different evidence.");
+      }
+      return existing;
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+      return await this.#store.save(bridge);
+    }
   }
 }

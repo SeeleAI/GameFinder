@@ -14,7 +14,7 @@ Call `create_save_backup(saveContextId, unitId, reason)` and then `verify_save_b
 
 ## Replacement
 
-Use `assess_save_package_compatibility` first. Same-account complete-container replacement may use `plan_save_replacement`. Game-specific conversion or slot import requires the corresponding adapter workflow; never downgrade unknown account binding to direct compatibility.
+Use `assess_save_adapter_requirement` for the exact operation, then `assess_save_package_compatibility`. Same-account complete-container replacement may use `plan_save_replacement` only when both assessments permit it and their IDs/hashes are bound. Game-specific conversion or slot import requires the corresponding adapter workflow; never downgrade unknown account binding to direct compatibility.
 
 Call `plan_save_replacement` (or the game-specific plan tool) with `reviewMode: "auto_safe"`. Pass `always_review` only when the user explicitly requests a preview/confirmation gate.
 
@@ -25,7 +25,10 @@ For any real replacement:
 - Expect apply to create and verify `pre_replacement_rescue` before writing.
 - Verify the committed record and preserve the rescue Backup ID.
 - Ask for offline runtime verification and call `record_save_runtime_verification` with the user's observed outcome.
+- Treat apply-time static verification as evidence for the frozen post-state. After the user launches the game, a normal auto-save may legitimately change file hashes; record that post-launch drift separately instead of reclassifying the committed transaction as failed or overwriting the new live state merely to reproduce the old hash.
 
 If runtime verification fails, retain diagnostics and plan a baseline restore. Do not silently retry a different source, slot, or target.
 
 When acceptance began with an explicit requirement to restore the original baseline, classify the exact verified baseline Restore Plan as `auto_safe`. Expiry or prestate drift requires a new Plan and fresh classification, not another confirmation by default.
+
+After baseline restore, verify exact hashes before launch and ask the user to confirm the original save in game. If the confirmation launch updates an auto-save, preserve it and record `original_restored` with the observed drift; do not perform another restore unless the user reports that the original state was not restored.

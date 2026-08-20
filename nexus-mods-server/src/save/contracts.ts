@@ -344,12 +344,25 @@ export const savePayloadCandidateSchema = z.object({
   root: z.union([z.literal("."), relativePath]),
   game: gameIdentitySchema,
   unitId: identifier,
+  recipe: z.object({
+    recipeId: identifier,
+    recipeVersion: identifier,
+    recipeHash: sha256,
+  }).optional(),
+  layoutFamily: z.enum([
+    "single-file",
+    "slot-file-set",
+    "container-with-companions",
+    "directory-tree",
+    "profile-plus-slots",
+  ]).optional(),
   files: z
     .array(
       z.object({
         sourcePath: relativePath,
         relativePath,
         bytes: z.number().int().nonnegative(),
+        slot: z.object({ kind: identifier, index: z.number().int().nonnegative().nullable() }).nullable().optional(),
       }),
     )
     .min(1)
@@ -357,6 +370,7 @@ export const savePayloadCandidateSchema = z.object({
   binding: z.object({
     kind: z.enum(["steam_id64", "account_bound_unknown", "none", "unknown"]),
     value: z.string().trim().min(1).max(200).nullable(),
+    evidence: z.string().trim().min(1).max(2_000).optional(),
   }),
   format: z.object({
     kind: z.enum([

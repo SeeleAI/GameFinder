@@ -9,6 +9,7 @@ import type { PlanReviewMode } from "../plan-review.js";
 import {
   EldenRingSlotImportService,
 } from "./adapters/elden-ring-slot-import-service.js";
+import { AdapterRequirementAssessor, type AdapterIntendedOperation } from "./adapter-assessment/adapter-requirement-assessor.js";
 import {
   type SaveBackupFaultInjector,
   SaveBackupService,
@@ -27,6 +28,11 @@ import {
   SaveContextResolver,
 } from "./context/save-context-resolver.js";
 import { probeSteamGameInstall } from "./context/steam-install-resolver.js";
+import { SaveContextResolverV2 } from "./context/save-context-v2-resolver.js";
+import { SaveInstallResolverRegistryV2 } from "./install-resolvers/resolver-registry.js";
+import type { PeMetadataReader } from "./install-resolvers/types.js";
+import { SaveLocationStrategyRegistryV2 } from "./location-strategies/registry.js";
+import { windowsSaveEnvironmentV2 } from "./location-strategies/windows-known-folders.js";
 import type {
   GameInstallContext,
   GameSaveProfile,
@@ -65,6 +71,7 @@ import {
   SaveRestoreService,
 } from "./restore/save-restore-service.js";
 import { SaveCompatibilityAssessor } from "./replacement/compatibility-assessor.js";
+import { SaveCompatibilityAssessorV2 } from "./replacement/compatibility-assessor-v2.js";
 import {
   type AppliedSaveReplacement,
   type SaveReplacementFaultInjector,
@@ -78,8 +85,14 @@ import {
   SaveSourceService,
 } from "./source/save-source-service.js";
 import { SaveContextStore } from "./storage/context-store.js";
+import { GameInstallContextV2Store } from "./storage/install-context-v2-store.js";
 import { LearnedSaveProfileStore } from "./storage/learned-profile-store.js";
 import { SaveProbeStore } from "./storage/probe-store.js";
+import { SaveContextV2Store } from "./storage/save-context-v2-store.js";
+import { GameSaveRecipeRegistryV2 } from "./recipes/recipe-registry.js";
+import type { GameInstallContextV2 } from "./v2/contracts.js";
+import type { SaveContextV2 } from "./v2/contracts.js";
+import { gameInstallContextV2LegacyProjection, recipeLegacyTransactionProfile, saveContextV2LegacyProjection } from "./v2/legacy-bridge.js";
 
 export interface SaveServiceOptions {
   managerRoot: string;
@@ -97,6 +110,7 @@ export interface SaveServiceOptions {
   eldenRingSlotImportPlanTtlMs?: number;
   nexusClient?: NexusSaveResearchClient;
   saveSourceFetch?: SaveSourceFetch;
+  peMetadataReader?: PeMetadataReader;
 }
 
 export interface CompleteSaveLocationProbeResult {
@@ -167,6 +181,13 @@ async function existingChangedPaths(
 export class SaveService {
   readonly #profiles: GameSaveProfileRegistry;
   readonly #contexts: SaveContextStore;
+  readonly #installContextsV2: GameInstallContextV2Store;
+  readonly #installResolversV2: SaveInstallResolverRegistryV2;
+  readonly #recipesV2: GameSaveRecipeRegistryV2;
+  readonly #locationStrategiesV2: SaveLocationStrategyRegistryV2;
+  readonly #saveContextsV2: SaveContextV2Store;
+  readonly #saveResolverV2: SaveContextResolverV2;
+  readonly #peMetadataReader: PeMetadataReader | undefined;
   readonly #learnedProfiles: LearnedSaveProfileStore;
   readonly #probes: SaveProbeStore;
   readonly #resolver: SaveContextResolver;
@@ -177,6 +198,8 @@ export class SaveService {
   readonly #inputInspector: SaveInputInspector;
   readonly #normalizer: SavePackageNormalizer;
   readonly #compatibility: SaveCompatibilityAssessor;
+  readonly #compatibilityV2: SaveCompatibilityAssessorV2;
+  readonly #adapterRequirements: AdapterRequirementAssessor;
   readonly #replacements: SaveReplacementService;
   readonly #runtimeVerifications: SaveRuntimeVerificationService;
   readonly #sources: SaveSourceService | null;
@@ -185,6 +208,13 @@ export class SaveService {
   private constructor(input: {
     profiles: GameSaveProfileRegistry;
     contexts: SaveContextStore;
+    installContextsV2: GameInstallContextV2Store;
+    installResolversV2: SaveInstallResolverRegistryV2;
+    recipesV2: GameSaveRecipeRegistryV2;
+    locationStrategiesV2: SaveLocationStrategyRegistryV2;
+    saveContextsV2: SaveContextV2Store;
+    saveResolverV2: SaveContextResolverV2;
+    peMetadataReader?: PeMetadataReader;
     learnedProfiles: LearnedSaveProfileStore;
     probes: SaveProbeStore;
     resolver: SaveContextResolver;
@@ -195,6 +225,8 @@ export class SaveService {
     inputInspector: SaveInputInspector;
     normalizer: SavePackageNormalizer;
     compatibility: SaveCompatibilityAssessor;
+    compatibilityV2: SaveCompatibilityAssessorV2;
+    adapterRequirements: AdapterRequirementAssessor;
     replacements: SaveReplacementService;
     runtimeVerifications: SaveRuntimeVerificationService;
     sources: SaveSourceService | null;
@@ -202,6 +234,13 @@ export class SaveService {
   }) {
     this.#profiles = input.profiles;
     this.#contexts = input.contexts;
+    this.#installContextsV2 = input.installContextsV2;
+    this.#installResolversV2 = input.installResolversV2;
+    this.#recipesV2 = input.recipesV2;
+    this.#locationStrategiesV2 = input.locationStrategiesV2;
+    this.#saveContextsV2 = input.saveContextsV2;
+    this.#saveResolverV2 = input.saveResolverV2;
+    this.#peMetadataReader = input.peMetadataReader;
     this.#learnedProfiles = input.learnedProfiles;
     this.#probes = input.probes;
     this.#resolver = input.resolver;
@@ -212,6 +251,8 @@ export class SaveService {
     this.#inputInspector = input.inputInspector;
     this.#normalizer = input.normalizer;
     this.#compatibility = input.compatibility;
+    this.#compatibilityV2 = input.compatibilityV2;
+    this.#adapterRequirements = input.adapterRequirements;
     this.#replacements = input.replacements;
     this.#runtimeVerifications = input.runtimeVerifications;
     this.#sources = input.sources;
@@ -219,10 +260,20 @@ export class SaveService {
   }
 
   static async create(options: SaveServiceOptions): Promise<SaveService> {
-    const profiles = new GameSaveProfileRegistry(options.profiles);
     const environment = resolveEnvironment(options.environment);
-    const [contexts, learnedProfiles, probes] = await Promise.all([
+    const recipesV2 = await GameSaveRecipeRegistryV2.fromDirectory();
+    const baseProfiles = new GameSaveProfileRegistry(options.profiles);
+    const profileCanonicalIds = new Set(baseProfiles.list().map((profile) => profile.game.canonicalId));
+    const profiles = new GameSaveProfileRegistry([
+      ...baseProfiles.list(),
+      ...(options.profiles === undefined ? recipesV2.list() : [])
+        .filter((recipe) => !profileCanonicalIds.has(recipe.game.canonicalId))
+        .map(recipeLegacyTransactionProfile),
+    ]);
+    const [contexts, installContextsV2, saveContextsV2, learnedProfiles, probes] = await Promise.all([
       SaveContextStore.create(options.managerRoot),
+      GameInstallContextV2Store.create(options.managerRoot),
+      SaveContextV2Store.create(options.managerRoot),
       LearnedSaveProfileStore.create(options.managerRoot),
       SaveProbeStore.create(options.managerRoot),
     ]);
@@ -260,6 +311,7 @@ export class SaveService {
     const normalizer = await SavePackageNormalizer.create({
       managerRoot: options.managerRoot,
       inspector: inputInspector,
+      recipes: recipesV2,
     });
     const eldenRingSlots = await EldenRingSlotImportService.create({
       managerRoot: options.managerRoot,
@@ -273,6 +325,19 @@ export class SaveService {
       managerRoot: options.managerRoot,
       contexts,
       packages: normalizer,
+    });
+    const adapterRequirements = await AdapterRequirementAssessor.create({
+      managerRoot: options.managerRoot,
+      contexts: saveContextsV2,
+      installs: installContextsV2,
+      packages: normalizer,
+      recipes: recipesV2,
+    });
+    const compatibilityV2 = await SaveCompatibilityAssessorV2.create({
+      managerRoot: options.managerRoot,
+      contexts: saveContextsV2,
+      packages: normalizer,
+      adapterRequirements,
     });
     const replacements = await SaveReplacementService.create({
       managerRoot: options.managerRoot,
@@ -298,9 +363,21 @@ export class SaveService {
           ...(options.saveSourceFetch ? { fetch: options.saveSourceFetch } : {}),
         })
       : null;
+    const locationStrategiesV2 = new SaveLocationStrategyRegistryV2();
     return new SaveService({
       profiles,
       contexts,
+      installContextsV2,
+      installResolversV2: new SaveInstallResolverRegistryV2(),
+      recipesV2,
+      locationStrategiesV2,
+      saveContextsV2,
+      saveResolverV2: new SaveContextResolverV2({
+        recipes: recipesV2,
+        strategies: locationStrategiesV2,
+        environment: windowsSaveEnvironmentV2(options.environment),
+      }),
+      ...(options.peMetadataReader === undefined ? {} : { peMetadataReader: options.peMetadataReader }),
       learnedProfiles,
       probes,
       resolver: new SaveContextResolver({
@@ -317,6 +394,8 @@ export class SaveService {
       inputInspector,
       normalizer,
       compatibility,
+      compatibilityV2,
+      adapterRequirements,
       replacements,
       runtimeVerifications,
       sources,
@@ -328,25 +407,95 @@ export class SaveService {
     return this.#profiles.list();
   }
 
+  listRecipesV2() {
+    return this.#recipesV2.list();
+  }
+
+  listInstallResolversV2() {
+    return this.#installResolversV2.list().map((resolver) => ({
+      schemaVersion: 2 as const,
+      resolverId: resolver.resolverId,
+      resolverVersion: resolver.resolverVersion,
+      distributionKind: resolver.distributionKind,
+      supportedPlatforms: ["windows"] as const,
+    }));
+  }
+
+  getRecipeV2(recipeId: string) {
+    const recipe = this.#recipesV2.findById(recipeId);
+    if (!recipe) throw new NexusError("SAVE_RECIPE_NOT_FOUND", "The requested Game Save Recipe was not found.");
+    return recipe;
+  }
+
+  listLocationStrategiesV2() {
+    return this.#locationStrategiesV2.list().map((strategy) => ({
+      schemaVersion: 2 as const,
+      strategyId: strategy.strategyId,
+      strategyVersion: strategy.strategyVersion,
+      boundedProbeCapable: true,
+    }));
+  }
+
+  listLayoutFamiliesV2() {
+    return [
+      "single-file",
+      "slot-file-set",
+      "container-with-companions",
+      "directory-tree",
+      "profile-plus-slots",
+    ].map((layoutFamily) => ({ schemaVersion: 2 as const, layoutFamily, layoutVersion: "1.0.0" }));
+  }
+
+  async probeGameInstall(input: { gameRoot: string }): Promise<Readonly<GameInstallContext>>;
   async probeGameInstall(input: {
     gameRoot: string;
-  }): Promise<Readonly<GameInstallContext>> {
-    const context = await probeSteamGameInstall({
+    recipeId?: string;
+    resolverHint?: string;
+  }): Promise<Readonly<GameInstallContext | GameInstallContextV2>>;
+  async probeGameInstall(input: {
+    gameRoot: string;
+    recipeId?: string;
+    resolverHint?: string;
+  }): Promise<Readonly<GameInstallContext | GameInstallContextV2>> {
+    const contextV2 = await this.#installResolversV2.probe({
       gameRoot: input.gameRoot,
-      profiles: this.#profiles,
+      recipes: this.#recipesV2,
+      ...(input.recipeId === undefined ? {} : { recipeId: input.recipeId }),
+      ...(input.resolverHint === undefined ? {} : { resolverHint: input.resolverHint }),
+      ...(this.#peMetadataReader === undefined ? {} : { peMetadataReader: this.#peMetadataReader }),
     });
-    return await this.#contexts.saveInstallContext(context);
+    if (contextV2.distributionKind !== "steam-library") {
+      const saved = await this.#installContextsV2.save(contextV2);
+      await this.#contexts.saveInstallContext(gameInstallContextV2LegacyProjection(saved));
+      return saved;
+    }
+    const legacy = await probeSteamGameInstall({ gameRoot: input.gameRoot, profiles: this.#profiles });
+    return await this.#contexts.saveInstallContext(legacy);
   }
 
   async getGameInstallContext(
     installContextId: string,
-  ): Promise<Readonly<GameInstallContext>> {
-    return await this.#contexts.getInstallContext(installContextId);
+  ): Promise<Readonly<GameInstallContext | GameInstallContextV2>> {
+    try {
+      return await this.#installContextsV2.get(installContextId);
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+      return await this.#contexts.getInstallContext(installContextId);
+    }
   }
 
   async resolveSaveLocations(
     installContextId: string,
   ): Promise<Readonly<SaveContext>> {
+    try {
+      const install = await this.#installContextsV2.get(installContextId);
+      const context = await this.#saveResolverV2.resolve(install);
+      const saved = await this.#saveContextsV2.save(context);
+      await this.#contexts.saveSaveContext(saveContextV2LegacyProjection(saved));
+      return saved as unknown as Readonly<SaveContext>;
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+    }
     const install = await this.#contexts.getInstallContext(installContextId);
     const context = await this.#resolver.resolve(install);
     return await this.#contexts.saveSaveContext(context);
@@ -355,7 +504,12 @@ export class SaveService {
   async getSaveContext(
     saveContextId: string,
   ): Promise<Readonly<SaveContext>> {
-    return await this.#contexts.getSaveContext(saveContextId);
+    try {
+      return await this.#saveContextsV2.get(saveContextId) as unknown as Readonly<SaveContext>;
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+      return await this.#contexts.getSaveContext(saveContextId);
+    }
   }
 
   async createSaveBackup(input: {
@@ -408,8 +562,26 @@ export class SaveService {
 
   async inspectSaveInput(
     inputPath: string,
+    target: { saveContextId?: string; recipeId?: string; unitId?: string } = {},
   ): Promise<Readonly<SaveInputInspection>> {
-    return await this.#inputInspector.inspect(inputPath);
+    if (target.saveContextId && target.recipeId) {
+      throw new NexusError("SAVE_CONTRACT_INVALID", "Provide saveContextId or recipeId, not both.");
+    }
+    let recipe = target.recipeId ? this.#recipesV2.findById(target.recipeId) : null;
+    if (target.saveContextId) {
+      const context = await this.#saveContextsV2.get(target.saveContextId);
+      recipe = this.#recipesV2.findById(context.recipe.recipeId);
+      if (!recipe || recipe.recipeHash !== context.recipe.recipeHash) {
+        throw new NexusError("SAVE_RECIPE_NOT_FOUND", "The Save Context Recipe is unavailable or changed.");
+      }
+    }
+    if ((target.saveContextId || target.recipeId) && !recipe) {
+      throw new NexusError("SAVE_RECIPE_NOT_FOUND", "The requested Game Save Recipe was not found.");
+    }
+    return await this.#inputInspector.inspect(
+      inputPath,
+      recipe ? { recipe, ...(target.unitId === undefined ? {} : { unitId: target.unitId }) } : undefined,
+    );
   }
 
   async getSaveInputInspection(
@@ -481,9 +653,8 @@ export class SaveService {
     maxCandidates?: number;
   }): Promise<SaveSourceResearchResult> {
     const sources = this.#requireSources();
-    const install = await this.#contexts.getInstallContext(input.installContextId);
-    const profile = this.#profiles.findByCanonicalGameId(install.game.canonicalId);
-    const domainName = profile?.sources?.nexusDomainName;
+    const target = await this.#researchTarget(input.installContextId);
+    const domainName = target.nexusDomainName;
     if (!domainName) {
       throw new NexusError(
         "SAVE_ADAPTER_UNSUPPORTED",
@@ -491,7 +662,7 @@ export class SaveService {
       );
     }
     return await sources.researchNexus({
-      game: install.game,
+      game: target.game,
       domainName,
       ...(input.query ? { query: input.query } : {}),
       ...(input.maxCandidates ? { maxCandidates: input.maxCandidates } : {}),
@@ -502,9 +673,8 @@ export class SaveService {
     installContextId: string;
   }): Promise<SaveSourceResearchResult> {
     const sources = this.#requireSources();
-    const install = await this.#contexts.getInstallContext(input.installContextId);
-    const profile = this.#profiles.findByCanonicalGameId(install.game.canonicalId);
-    const gameSlug = profile?.sources?.speedrunGameSlug;
+    const target = await this.#researchTarget(input.installContextId);
+    const gameSlug = target.speedrunGameSlug;
     if (!gameSlug) {
       throw new NexusError(
         "SAVE_ADAPTER_UNSUPPORTED",
@@ -512,7 +682,7 @@ export class SaveService {
       );
     }
     return await sources.researchSpeedrunOnline({
-      game: install.game,
+      game: target.game,
       pageUrl: `https://www.speedrun.com/${gameSlug}/resources`,
     });
   }
@@ -524,14 +694,13 @@ export class SaveService {
     fixture?: boolean;
   }): Promise<SaveSourceResearchResult> {
     const sources = this.#requireSources();
-    const install = await this.#contexts.getInstallContext(input.installContextId);
-    const profile = this.#profiles.findByCanonicalGameId(install.game.canonicalId);
-    const gameSlug = profile?.sources?.speedrunGameSlug;
+    const target = await this.#researchTarget(input.installContextId);
+    const gameSlug = target.speedrunGameSlug;
     if (!gameSlug) {
       throw new NexusError("SAVE_ADAPTER_UNSUPPORTED", "No Speedrun game slug is mapped for this game.");
     }
     return await sources.researchSpeedrunFromSnapshot({
-      game: install.game,
+      game: target.game,
       pageUrl: `https://www.speedrun.com/${gameSlug}/resources`,
       pageHtml: input.pageHtml,
       ...(input.detailPages ? { detailPages: input.detailPages } : {}),
@@ -574,7 +743,14 @@ export class SaveService {
 
   async inspectDownloadedSave(receiptId: string): Promise<Readonly<SaveInputInspection>> {
     const receipt = await this.#requireSources().verifyReceipt(receiptId);
-    const inspection = await this.#inputInspector.inspect(receipt.absolutePath);
+    const candidate = await this.#requireSources().getCandidate(receipt.candidateId);
+    const recipes = this.#recipesV2.findCandidates({ canonicalId: candidate.game.canonicalId });
+    if (recipes.length !== 1) {
+      throw new NexusError(recipes.length === 0 ? "SAVE_RECIPE_NOT_FOUND" : "SAVE_RECIPE_AMBIGUOUS", "Downloaded save source does not resolve to one Game Save Recipe.", {
+        details: { candidateId: candidate.candidateId, recipeIds: recipes.map((recipe) => recipe.recipeId) },
+      });
+    }
+    const inspection = await this.#inputInspector.inspect(receipt.absolutePath, { recipe: recipes[0]! });
     if (inspection.input.sha256 !== receipt.sha256 || inspection.input.bytes !== receipt.bytes) {
       throw new NexusError(
         "SAVE_SOURCE_UNAVAILABLE",
@@ -622,13 +798,42 @@ export class SaveService {
     packageId: string;
     saveContextId: string;
   }): Promise<Readonly<SaveCompatibilityAssessment>> {
-    return await this.#compatibility.assess(input);
+    try {
+      return await this.#compatibilityV2.assess(input) as unknown as Readonly<SaveCompatibilityAssessment>;
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+      return await this.#compatibility.assess(input);
+    }
+  }
+
+  async assessSaveAdapterRequirement(input: {
+    saveContextId: string;
+    packageId?: string;
+    intendedOperation: AdapterIntendedOperation;
+    sourceSlot?: number;
+    targetSlot?: number;
+    allowWholeUnitFallback?: boolean;
+  }) {
+    return await this.#adapterRequirements.assess(input);
+  }
+
+  async getSaveAdapterRequirementAssessment(assessmentId: string) {
+    return await this.#adapterRequirements.get(assessmentId);
+  }
+
+  async getSaveAdapterDevelopmentBrief(briefId: string) {
+    return await this.#adapterRequirements.getBrief(briefId);
   }
 
   async getSaveCompatibilityAssessment(
     assessmentId: string,
   ): Promise<Readonly<SaveCompatibilityAssessment>> {
-    return await this.#compatibility.get(assessmentId);
+    try {
+      return await this.#compatibilityV2.get(assessmentId) as unknown as Readonly<SaveCompatibilityAssessment>;
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+      return await this.#compatibility.get(assessmentId);
+    }
   }
 
   async planSaveReplacement(input: {
@@ -636,6 +841,51 @@ export class SaveService {
     strategy: "direct_replace";
     reviewMode?: PlanReviewMode;
   }): Promise<Readonly<SaveReplacementPlan>> {
+    let compatibilityV2;
+    try {
+      compatibilityV2 = await this.#compatibilityV2.get(input.assessmentId);
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+      return await this.#replacements.planReplacement(input);
+    }
+    if (!compatibilityV2.adapterRequirementAssessmentId || !compatibilityV2.adapterRequirementAssessmentHash) {
+      throw new NexusError("SAVE_ADAPTER_UNSUPPORTED", "The V2 Compatibility Assessment predates G6 Adapter gating; reassess the package.");
+    }
+    const requirement = await this.#adapterRequirements.get(compatibilityV2.adapterRequirementAssessmentId);
+    this.#adapterRequirements.assertCurrent(requirement);
+    if (
+      requirement.assessmentHash !== compatibilityV2.adapterRequirementAssessmentHash ||
+      requirement.packageId !== compatibilityV2.packageId ||
+      requirement.packageManifestHash !== compatibilityV2.packageManifestHash ||
+      requirement.saveContextId !== compatibilityV2.saveContextId ||
+      requirement.saveContextHash !== compatibilityV2.saveContextHash ||
+      !compatibilityV2.replacementPlanAllowed ||
+      !requirement.replacementPlanAllowed ||
+      !(
+        ["not_required", "recommended"].includes(requirement.requirement) ||
+        (
+          requirement.requirement === "required" &&
+          requirement.adapterAvailability === "matched" &&
+          requirement.reasonCodes.includes("FORMAT_ADAPTER_VALIDATED_EXACT_REPLACEMENT")
+        )
+      )
+    ) {
+      throw new NexusError("SAVE_ADAPTER_UNSUPPORTED", "Adapter Requirement Assessment blocks generic direct replacement.", {
+        details: { requirement: requirement.requirement, reasonCodes: requirement.reasonCodes },
+      });
+    }
+    await this.#compatibility.saveV2TransactionBridge({
+      assessmentId: compatibilityV2.assessmentId,
+      packageId: compatibilityV2.packageId,
+      packageManifestHash: compatibilityV2.packageManifestHash,
+      saveContextId: compatibilityV2.saveContextId,
+      reasons: [
+        ...compatibilityV2.reasons,
+        `G7 transaction bridge is bound to Adapter Requirement Assessment ${requirement.assessmentId}/${requirement.assessmentHash}.`,
+      ],
+      warnings: compatibilityV2.warnings,
+      assessedAt: compatibilityV2.assessedAt,
+    });
     return await this.#replacements.planReplacement(input);
   }
 
@@ -782,7 +1032,7 @@ export class SaveService {
       ),
     );
     const changes = diffSaveSnapshots(started.before, after);
-    const essentialNames = new Set(
+    const essentialPatterns = new Set(
       profile.saveUnits.flatMap((unit) =>
         unit.essential.map((entry) =>
           path.basename(entry).toLowerCase(),
@@ -793,7 +1043,10 @@ export class SaveService {
     for (const change of changes) {
       if (
         change.after?.kind === "file" &&
-        essentialNames.has(path.basename(change.relativePath).toLowerCase())
+        [...essentialPatterns].some((pattern) => {
+          const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*");
+          return new RegExp(`^${escaped}$`, "i").test(path.basename(change.relativePath));
+        })
       ) {
         candidateRoots.add(
           path.dirname(
@@ -899,5 +1152,37 @@ export class SaveService {
       );
     }
     return this.#sources;
+  }
+
+  async #researchTarget(installContextId: string): Promise<{
+    game: { canonicalId: string; displayName: string; storeAppId: string | null };
+    nexusDomainName: string | null;
+    speedrunGameSlug: string | null;
+  }> {
+    try {
+      const install = await this.#contexts.getInstallContext(installContextId);
+      const profile = this.#profiles.findByCanonicalGameId(install.game.canonicalId);
+      return {
+        game: install.game,
+        nexusDomainName: profile?.sources?.nexusDomainName ?? null,
+        speedrunGameSlug: profile?.sources?.speedrunGameSlug ?? null,
+      };
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+    }
+    const install = await this.#installContextsV2.get(installContextId);
+    const recipe = install.recipe ? this.#recipesV2.findById(install.recipe.recipeId) : null;
+    if (!recipe || recipe.recipeHash !== install.recipe?.recipeHash) {
+      throw new NexusError("SAVE_RECIPE_NOT_FOUND", "The Install Context Recipe is unavailable or changed.");
+    }
+    return {
+      game: {
+        canonicalId: recipe.game.canonicalId,
+        displayName: recipe.game.displayName,
+        storeAppId: recipe.game.platformAppIds.steam ?? null,
+      },
+      nexusDomainName: recipe.sources.nexusDomainName,
+      speedrunGameSlug: recipe.sources.speedrunGameSlug,
+    };
   }
 }

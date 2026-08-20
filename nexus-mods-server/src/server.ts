@@ -400,19 +400,95 @@ export function createNexusMcpServer(
   );
 
   server.registerTool(
+    "list_save_distribution_resolvers",
+    {
+      title: "List save installation resolvers",
+      description: "List registered Windows save-installation Resolver families and versions.",
+      inputSchema: {},
+      annotations: localReadOnlyAnnotations
+    },
+    async () => safe(async () => {
+      const resolvers = (await saves()).listInstallResolversV2();
+      return ok(`Listed ${resolvers.length} save installation resolvers.`, { ok: true, resolvers, meta: meta("local", null) });
+    })
+  );
+
+  server.registerTool(
+    "list_save_location_strategies",
+    {
+      title: "List save location strategies",
+      description: "List registered data-driven Windows Save Location Strategies and versions.",
+      inputSchema: {},
+      annotations: localReadOnlyAnnotations
+    },
+    async () => safe(async () => {
+      const strategies = (await saves()).listLocationStrategiesV2();
+      return ok(`Listed ${strategies.length} save location strategies.`, { ok: true, strategies, meta: meta("local", null) });
+    })
+  );
+
+  server.registerTool(
+    "list_save_layout_families",
+    {
+      title: "List save layout families",
+      description: "List generic Save Layout Families used to materialize exact managed paths.",
+      inputSchema: {},
+      annotations: localReadOnlyAnnotations
+    },
+    async () => safe(async () => {
+      const layouts = (await saves()).listLayoutFamiliesV2();
+      return ok(`Listed ${layouts.length} save layout families.`, { ok: true, layouts, meta: meta("local", null) });
+    })
+  );
+
+  server.registerTool(
+    "list_game_save_recipes",
+    {
+      title: "List Game Save Recipes",
+      description: "List immutable data-driven Game Save Recipes and their identity hashes.",
+      inputSchema: {},
+      annotations: localReadOnlyAnnotations
+    },
+    async () => safe(async () => {
+      const recipes = (await saves()).listRecipesV2();
+      return ok(`Listed ${recipes.length} Game Save Recipes.`, { ok: true, recipes, meta: meta("local", null) });
+    })
+  );
+
+  server.registerTool(
+    "get_game_save_recipe",
+    {
+      title: "Get one Game Save Recipe",
+      description: "Read and hash-verify one immutable Game Save Recipe.",
+      inputSchema: { recipeId: z.string().trim().min(1) },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ recipeId }) => safe(async () => {
+      const recipe = (await saves()).getRecipeV2(recipeId);
+      return ok(`Verified Game Save Recipe ${recipeId}.`, { ok: true, recipe, meta: meta("local", null) });
+    })
+  );
+
+  server.registerTool(
     "probe_save_game_install",
     {
       title: "Identify a game install for save management",
       description:
-        "Resolve one exact Windows game root to a hashed Game Install Context by matching its Steam appmanifest and executable anchor. Writes only local context metadata; never modifies the game or saves.",
+        "Resolve one exact Windows game root to a hashed Game Install Context using Steam-library, RUNE-emulator, or verified manual-PE evidence. Writes only local context metadata; never modifies the game or saves.",
       inputSchema: {
-        gameRoot: z.string().trim().min(3)
+        gameRoot: z.string().trim().min(3),
+        recipeId: z.string().trim().min(1).optional(),
+        resolverHint: z.enum(["steam-library", "rune-steam-emulator", "manual-pe"]).optional()
       },
       annotations: localStateAnnotations
     },
-    async ({ gameRoot }) =>
+    async ({ gameRoot, recipeId, resolverHint }) =>
       safe(async () => {
-        const context = await (await saves()).probeGameInstall({ gameRoot });
+        const context = await (await saves()).probeGameInstall({
+          gameRoot,
+          ...(recipeId === undefined ? {} : { recipeId }),
+          ...(resolverHint === undefined ? {} : { resolverHint })
+        });
         return ok(
           `Identified ${context.game.displayName} at ${context.gameRoot}.`,
           {
@@ -820,13 +896,20 @@ export function createNexusMcpServer(
       description:
         "Read and hash one absolute file, directory, ZIP, RAR, or 7z; safely inventory paths and sizes, detect wrapper roots and Save Unit candidates, and persist an immutable inspection. RAR uses UnRAR with password interaction disabled; 7z uses a discovered bsdtar capability. Does not extract into or modify the source.",
       inputSchema: {
-        inputPath: z.string().trim().min(3)
+        inputPath: z.string().trim().min(3),
+        saveContextId: z.string().uuid().optional(),
+        recipeId: z.string().trim().min(1).optional(),
+        unitId: z.string().trim().min(1).optional()
       },
       annotations: localStateAnnotations
     },
-    async ({ inputPath }) =>
+    async ({ inputPath, saveContextId, recipeId, unitId }) =>
       safe(async () => {
-        const inspection = await (await saves()).inspectSaveInput(inputPath);
+        const inspection = await (await saves()).inspectSaveInput(inputPath, {
+          ...(saveContextId === undefined ? {} : { saveContextId }),
+          ...(recipeId === undefined ? {} : { recipeId }),
+          ...(unitId === undefined ? {} : { unitId })
+        });
         return ok(
           `Inspected save input ${inspection.inspectionId}; found ${inspection.payloadCandidates.length} payload candidate(s).`,
           {
@@ -1264,6 +1347,86 @@ export function createNexusMcpServer(
           meta: meta("local", null)
         });
       })
+  );
+
+  server.registerTool(
+    "assess_save_adapter_requirement",
+    {
+      title: "Assess whether a save operation needs a format Adapter",
+      description: "Create an immutable, operation-scoped G6 assessment from the verified Save Context, optional Standard Save Package, Recipe, layout, binding, format, and bounded static evidence. This is read-only with respect to game saves and never treats a missing visible account ID as proof of compatibility.",
+      inputSchema: {
+        saveContextId: z.string().uuid(),
+        packageId: z.string().regex(/^savepkg-[a-f0-9]{64}$/).optional(),
+        intendedOperation: z.enum([
+          "backup",
+          "restore-exact-bytes",
+          "replace-whole-unit",
+          "import-slot-file",
+          "import-container-slot",
+          "cross-account-import",
+          "version-conversion"
+        ]),
+        sourceSlot: z.number().int().min(0).max(100000).optional(),
+        targetSlot: z.number().int().min(0).max(100000).optional(),
+        allowWholeUnitFallback: z.boolean().default(false)
+      },
+      annotations: localStateAnnotations
+    },
+    async ({ saveContextId, packageId, intendedOperation, sourceSlot, targetSlot, allowWholeUnitFallback }) => safe(async () => {
+      const result = await (await saves()).assessSaveAdapterRequirement({
+        saveContextId,
+        ...(packageId === undefined ? {} : { packageId }),
+        intendedOperation,
+        ...(sourceSlot === undefined ? {} : { sourceSlot }),
+        ...(targetSlot === undefined ? {} : { targetSlot }),
+        allowWholeUnitFallback
+      });
+      return ok(`Adapter Requirement Assessment ${result.assessment.assessmentId}: ${result.assessment.requirement}.`, {
+        ok: true,
+        ...result,
+        meta: meta("local", null, [
+          result.assessment.replacementPlanAllowed
+            ? "The assessment permits its scoped replacement path; Compatibility and immutable Plan checks still apply."
+            : "No real Replacement Plan is permitted by this assessment."
+        ])
+      });
+    })
+  );
+
+  server.registerTool(
+    "get_save_adapter_requirement_assessment",
+    {
+      title: "Get one Adapter Requirement Assessment",
+      description: "Read and hash-verify one immutable operation-scoped Adapter Requirement Assessment.",
+      inputSchema: { assessmentId: z.string().uuid() },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ assessmentId }) => safe(async () => {
+      const assessment = await (await saves()).getSaveAdapterRequirementAssessment(assessmentId);
+      return ok(`Verified Adapter Requirement Assessment ${assessmentId}.`, {
+        ok: true,
+        assessment,
+        meta: meta("local", null)
+      });
+    })
+  );
+
+  server.registerTool(
+    "get_save_adapter_development_brief",
+    {
+      title: "Get one Adapter Development Brief",
+      description: "Read and hash-verify the immutable development brief generated only when a required format Adapter is missing.",
+      inputSchema: { briefId: z.string().uuid() },
+      annotations: localReadOnlyAnnotations
+    },
+    async ({ briefId }) => safe(async () => {
+      const brief = await (await saves()).getSaveAdapterDevelopmentBrief(briefId);
+      return ok(`Verified Adapter Development Brief ${briefId}.`, {
+        ok: true,
+        brief,
+        meta: meta("local", null)
+      });
+    })
   );
 
   server.registerTool(

@@ -17,6 +17,7 @@ import type {
 import { saveInputInspectionSchema } from "../contracts.js";
 import { normalizeSaveRelativePath } from "../path-policy.js";
 import { SaveInputInspectionStore } from "./save-input-inspection-store.js";
+import type { GameSaveRecipe } from "../v2/contracts.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -243,7 +244,7 @@ export function parseUnrarTechnicalList(
   return entries;
 }
 
-function identifyPayloads(
+function identifyLegacyEldenRingPayloads(
   entries: ReadonlyArray<SaveInputInspection["entries"][number]>,
 ): SavePayloadCandidate[] {
   const files = entries.filter((entry) => entry.kind === "file");
@@ -290,6 +291,79 @@ function identifyPayloads(
         : "probable" as const,
     };
   });
+}
+
+function recipePatternRegex(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
+function candidateSlot(relativePath: string): { kind: string; index: number | null } | null {
+  const match = /(?:^|[_-])(\d+)(?=\.[^.]+$)/.exec(path.posix.basename(relativePath));
+  return match ? { kind: "filename-index", index: Number(match[1]) } : null;
+}
+
+function identifyRecipePayloads(
+  entries: ReadonlyArray<SaveInputInspection["entries"][number]>,
+  recipe: Readonly<GameSaveRecipe>,
+  requestedUnitId?: string,
+): SavePayloadCandidate[] {
+  const files = entries.filter((entry) => entry.kind === "file");
+  const roots = new Set<string>(["."]);
+  for (const file of files) {
+    const segments = file.normalizedPath.split("/");
+    for (let length = 1; length < segments.length; length += 1) roots.add(segments.slice(0, length).join("/"));
+  }
+  const result: SavePayloadCandidate[] = [];
+  for (const unit of recipe.saveUnits.filter((candidate) => requestedUnitId === undefined || candidate.unitId === requestedUnitId)) {
+    for (const root of [...roots].sort()) {
+      const prefix = root === "." ? "" : `${root}/`;
+      const relativeEntries = files
+        .filter((entry) => root === "." || entry.normalizedPath.startsWith(prefix))
+        .map((entry) => ({ entry, relativePath: root === "." ? entry.normalizedPath : entry.normalizedPath.slice(prefix.length) }))
+        .filter(({ relativePath }) => !relativePath.includes("/") || unit.managedPatterns.some((pattern) => pattern.includes("/")));
+      const matched = (pattern: string) => relativeEntries.filter(({ relativePath }) => recipePatternRegex(pattern).test(relativePath));
+      if (unit.requiredAll.some((pattern) => matched(pattern).length === 0)) continue;
+      if (unit.requiredAnyOf.length > 0 && !unit.requiredAnyOf.some((pattern) => matched(pattern).length > 0)) continue;
+      const selected = relativeEntries.filter(({ relativePath }) => unit.managedPatterns.some((pattern) => recipePatternRegex(pattern).test(relativePath)));
+      if (selected.length === 0 || selected.length > unit.maximumMatches) continue;
+      const selectedKeys = new Set(selected.map(({ entry }) => entry.normalizedPath.toLocaleLowerCase("en-US")));
+      if ([...result].some((candidate) => candidate.unitId === unit.unitId && candidate.files.every((file) => selectedKeys.has(file.sourcePath.toLocaleLowerCase("en-US"))))) continue;
+      const accountSegment = root.split("/").reverse().find((segment) => /^\d{17}$/.test(segment));
+      const binding = recipe.binding.policy === "none"
+        ? { kind: "none" as const, value: null, evidence: recipe.binding.evidenceScope ?? "Recipe declares no internal binding." }
+        : recipe.format.adapterId === "elden-ring-steam-pc" && accountSegment
+          ? { kind: "steam_id64" as const, value: accountSegment, evidence: "Numeric wrapper segment interpreted by the trusted Elden Ring adapter scope." }
+          : recipe.binding.policy === "embedded"
+            ? { kind: "account_bound_unknown" as const, value: null, evidence: recipe.binding.evidenceScope ?? "Recipe declares embedded binding." }
+            : { kind: "unknown" as const, value: null, evidence: recipe.binding.evidenceScope ?? "Recipe does not prove package account binding." };
+      result.push({
+        payloadSelectionId: randomUUID(),
+        root,
+        game: {
+          canonicalId: recipe.game.canonicalId,
+          displayName: recipe.game.displayName,
+          storeAppId: recipe.game.platformAppIds.steam ?? null,
+        },
+        unitId: unit.unitId,
+        recipe: { recipeId: recipe.recipeId, recipeVersion: recipe.recipeVersion, recipeHash: recipe.recipeHash },
+        layoutFamily: unit.layoutFamily,
+        files: selected.map(({ entry, relativePath }) => ({
+          sourcePath: entry.normalizedPath,
+          relativePath,
+          bytes: entry.bytes,
+          slot: unit.layoutFamily === "slot-file-set" ? candidateSlot(relativePath) : null,
+        })).sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
+        binding,
+        format: {
+          kind: recipe.format.kind === "opaque-files" ? "unknown" : recipe.format.kind,
+          adapterHint: recipe.format.adapterId,
+        },
+        confidence: "confirmed",
+      });
+    }
+  }
+  return result;
 }
 
 async function discoverRarCapability(): Promise<RarCapability | null> {
@@ -373,7 +447,10 @@ export class SaveInputInspector {
     });
   }
 
-  async inspect(inputPath: string): Promise<Readonly<SaveInputInspection>> {
+  async inspect(
+    inputPath: string,
+    target?: { recipe: Readonly<GameSaveRecipe>; unitId?: string },
+  ): Promise<Readonly<SaveInputInspection>> {
     if (!path.isAbsolute(inputPath)) {
       throw new NexusError("SAVE_INPUT_UNSUPPORTED", "Save inputPath must be absolute.");
     }
@@ -533,7 +610,9 @@ export class SaveInputInspector {
     } else {
       throw new NexusError("SAVE_INPUT_UNSUPPORTED", "Save input must be a regular file or directory.");
     }
-    const payloadCandidates = identifyPayloads(entries);
+    const payloadCandidates = target
+      ? identifyRecipePayloads(entries, target.recipe, target.unitId)
+      : identifyLegacyEldenRingPayloads(entries);
     const containsExecutable = entries.some(
       (entry) => entry.kind === "file" && EXECUTABLE_EXTENSIONS.has(path.extname(entry.normalizedPath).toLowerCase()),
     );

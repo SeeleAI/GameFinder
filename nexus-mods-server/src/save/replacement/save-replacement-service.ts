@@ -203,7 +203,10 @@ export class SaveReplacementService {
       this.#contexts.getSaveContext(assessment.saveContextId),
     ]);
     this.#assertAssessmentCurrent(assessment, savePackage.manifestHash);
-    const unit = this.#unit(context);
+    const packageUnitId = "unitId" in savePackage && typeof savePackage.unitId === "string"
+      ? savePackage.unitId
+      : "vanilla-main";
+    const unit = this.#unit(context, packageUnitId);
     const root = this.#primaryRoot(context);
     const operations: SaveReplacementPlan["operations"] = [];
     const payloadPolicies: SaveReplacementPlan["payloadPolicies"] = [];
@@ -316,7 +319,7 @@ export class SaveReplacementService {
     ) {
       throw new NexusError("SAVE_STAGING_INVALID", "Staged Elden Ring import is not compatible with a slot-import Replacement Plan.");
     }
-    const unit = this.#unit(context);
+    const unit = this.#unit(context, "vanilla-main");
     const root = this.#primaryRoot(context);
     const targetPath = resolveSaveTarget({
       saveRoot: root.absolutePath,
@@ -504,7 +507,7 @@ export class SaveReplacementService {
       await transaction.append("applying", plan.strategy === "slot_import"
         ? "Applying frozen Elden Ring slot-import replacement operation."
         : "Applying direct save replacement operations.");
-      const unit = this.#unit(context);
+      const unit = this.#unit(context, plan.rescueUnitId);
       for (const operation of plan.operations) {
         await this.#checkpoint("before_target_write", plan, transaction, operation.operationId);
         const resolved = resolveSaveTarget({
@@ -614,7 +617,7 @@ export class SaveReplacementService {
     context: SaveContext,
     phase: "pre" | "post",
   ): Promise<void> {
-    const unit = this.#unit(context);
+    const unit = this.#unit(context, plan.rescueUnitId);
     for (const operation of plan.operations) {
       const resolved = resolveSaveTarget({
         saveRoot: plan.target.absolutePath,
@@ -738,9 +741,9 @@ export class SaveReplacementService {
     return this.#eldenRingSlots;
   }
 
-  #unit(context: SaveContext): SaveContext["saveUnits"][number] {
-    const unit = context.saveUnits.find((candidate) => candidate.unitId === "vanilla-main");
-    if (!unit) throw new NexusError("SAVE_CONTEXT_STALE", "vanilla-main Save Unit is unavailable.");
+  #unit(context: SaveContext, unitId: string): SaveContext["saveUnits"][number] {
+    const unit = context.saveUnits.find((candidate) => candidate.unitId === unitId);
+    if (!unit) throw new NexusError("SAVE_CONTEXT_STALE", `Save Unit ${unitId} is unavailable.`);
     return unit;
   }
 

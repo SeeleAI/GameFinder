@@ -24,6 +24,7 @@ Create:
 <ModProject>/
 ├── PROJECT.md
 ├── .gitignore
+├── external-mods/          # local reference Mods; ignored by Git
 └── docs/
     ├── interface-matrix.md
     ├── experiments.md
@@ -73,6 +74,8 @@ The initializer:
 - allows an already-created empty target directory;
 - refuses any non-empty target;
 - copies UTF-8 templates;
+- creates `external-mods/` for downloaded, already-developed Mods used as local references;
+- ignores `external-mods/` and all of its contents in Git;
 - does not create source directories or a validator.
 
 ## Adding ecosystem-specific structure

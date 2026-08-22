@@ -17,6 +17,8 @@ TEMPLATE_MAP = {
     "pitfalls.md.template": Path("docs/pitfalls.md"),
 }
 
+LOCAL_DIRECTORIES = (Path("external-mods"),)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -97,6 +99,11 @@ def initialize_project(project_name: str, parent: Path, game_name: str) -> Path:
             encoding="utf-8",
             newline="\n",
         )
+        created.append(destination)
+
+    for relative_path in LOCAL_DIRECTORIES:
+        destination = target / relative_path
+        destination.mkdir()
         created.append(destination)
 
     print(f"Initialized Mod project: {target}")

@@ -3,6 +3,9 @@
 .vs/
 *.user
 
+# Downloaded Mods used only as local development references
+external-mods/
+
 # Runtime logs and temporary files
 *.log
 *.tmp

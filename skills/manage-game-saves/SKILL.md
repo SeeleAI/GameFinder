@@ -1,6 +1,6 @@
 ---
 name: manage-game-saves
-description: Locate, inspect, research, download, standardize, back up, restore, replace, or import Windows game saves through the GameFinder save-management MCP tools. Use when Codex is given a Windows game root or local save/archive and needs to discover the corresponding save location, acquire a Nexus or Speedrun save, create or verify backups, safely restore a prior state, replace a same-account save, or import an Elden Ring character slot with SteamID64/checksum handling. Do not use for game Mods, cloud-save administration, console saves, or editing gameplay values.
+description: Locate, inspect, research, download, standardize, back up, restore, replace, or import Windows game saves through the GameFinder save-management MCP tools. Use when the agent is given a Windows game root or local save/archive and needs to discover the corresponding save location, acquire a Nexus or Speedrun save, create or verify backups, safely restore a prior state, replace a same-account save, or import an Elden Ring character slot with SteamID64/checksum handling. Do not use for game Mods, cloud-save administration, console saves, or editing gameplay values.
 ---
 
 # Manage Game Saves

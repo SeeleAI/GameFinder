@@ -2,6 +2,8 @@
 
 Local STDIO MCP server for Nexus Mods research, verified downloads, evidence-driven transactional installation and uninstall, and Windows game-save management.
 
+For installation target selection, scope, MCP registration, and skill installation, follow the [repository's installation instructions for AI agents](../README.md#installation-instructions-for-ai-agents). Configure this server for the AI agent application or CLI hosting the user's conversation, unless the user explicitly selects another target; `.codex/config.toml` is only the maintainer's Codex-local development configuration.
+
 ## Runtime prerequisites
 
 Required on every machine:
@@ -109,7 +111,7 @@ Only one MCP/Chromium process may open this Profile at a time. A second process 
 
 ## First Nexus login
 
-Start the MCP server through Codex and call:
+Start the MCP server through the target AI agent configured with GameFinder and call:
 
 ```text
 open_nexus_login

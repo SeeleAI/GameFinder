@@ -1,6 +1,6 @@
 ---
 name: develop-game-mods
-description: Initialize minimal game-mod project knowledge scaffolds, research implementation routes and interfaces, and implement, port, debug, or extend mods across different games, loaders, languages, editors, and asset forms. Use when Codex is asked to create a new mod development project, investigate how a requested mod feature could work, analyze game/SDK/template/existing-mod references, perform concrete mod development, or preserve reusable interface, experiment, and pitfall knowledge. Do not use for merely discovering, downloading, or installing third-party mods.
+description: Initialize minimal game-mod project knowledge scaffolds, research implementation routes and interfaces, and implement, port, debug, or extend mods across different games, loaders, languages, editors, and asset forms. Use when the agent is asked to create a new mod development project, investigate how a requested mod feature could work, analyze game/SDK/template/existing-mod references, perform concrete mod development, or preserve reusable interface, experiment, and pitfall knowledge. Do not use for merely discovering, downloading, or installing third-party mods.
 ---
 
 # Develop Game Mods

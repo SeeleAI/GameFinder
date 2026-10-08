@@ -8,6 +8,8 @@ import { computeSaveCompatibilityAssessmentV2Hash, saveCompatibilityAssessmentV2
 import { ensureRealStoreDirectory, publishJsonExclusive, readStoredJson } from "../storage/json-store.js";
 import path from "node:path";
 import type { AdapterRequirementAssessor } from "../adapter-assessment/adapter-requirement-assessor.js";
+import type { GameSaveRecipeRegistryV2 } from "../recipes/recipe-registry.js";
+import { matchesRecipePathPattern } from "../layout-families/materializer.js";
 
 export class SaveCompatibilityAssessorV2 {
   private constructor(
@@ -15,14 +17,16 @@ export class SaveCompatibilityAssessorV2 {
     private readonly packages: SavePackageNormalizer,
     private readonly storeRoot: string,
     private readonly adapterRequirements: AdapterRequirementAssessor,
+    private readonly recipes: GameSaveRecipeRegistryV2,
   ) {}
 
-  static async create(options: { managerRoot: string; contexts: SaveContextV2Store; packages: SavePackageNormalizer; adapterRequirements: AdapterRequirementAssessor }): Promise<SaveCompatibilityAssessorV2> {
+  static async create(options: { managerRoot: string; contexts: SaveContextV2Store; packages: SavePackageNormalizer; adapterRequirements: AdapterRequirementAssessor; recipes: GameSaveRecipeRegistryV2 }): Promise<SaveCompatibilityAssessorV2> {
     return new SaveCompatibilityAssessorV2(
       options.contexts,
       options.packages,
       await ensureRealStoreDirectory(options.managerRoot, "save-compatibility-assessments-v2"),
       options.adapterRequirements,
+      options.recipes,
     );
   }
 
@@ -41,6 +45,8 @@ export class SaveCompatibilityAssessorV2 {
     let state: SaveCompatibilityAssessmentV2["state"] = "compatible_direct";
     let accountRelation: SaveCompatibilityAssessmentV2["accountRelation"] = "unknown";
     const unit = context.saveUnits.find((candidate) => candidate.unitId === savePackage.unitId);
+    const recipe = this.recipes.findById(context.recipe.recipeId);
+    const recipeUnit = recipe?.saveUnits.find((candidate) => candidate.unitId === savePackage.unitId);
     if (savePackage.recipe.recipeHash !== context.recipe.recipeHash) {
       state = "unsupported";
       reasons.push("Package Recipe identity does not match the target Save Context.");
@@ -51,15 +57,26 @@ export class SaveCompatibilityAssessorV2 {
       state = "conversion_required";
       reasons.push("Package and target Layout Families differ.");
     }
-    const managed = new Set(unit?.materializedFiles.map((file) => file.relativePath.toLocaleLowerCase("en-US")) ?? []);
     const targetMappings = savePackage.payload.files.map((file) => ({
       sourcePath: file.sourcePath,
       packageRelativePath: file.relativePath,
       targetRelativePath: file.relativePath,
     }));
-    if (state === "compatible_direct" && targetMappings.some((mapping) => !managed.has(mapping.targetRelativePath.toLocaleLowerCase("en-US")))) {
+    if (
+      state === "compatible_direct" &&
+      (
+        !recipe ||
+        recipe.recipeHash !== context.recipe.recipeHash ||
+        !recipeUnit ||
+        targetMappings.some((mapping) =>
+          !recipeUnit.managedPatterns.some((pattern) =>
+            matchesRecipePathPattern(mapping.targetRelativePath, pattern),
+          ),
+        )
+      )
+    ) {
       state = "unsupported";
-      reasons.push("At least one package file maps outside the frozen target managed paths.");
+      reasons.push("At least one package file maps outside the Recipe-authorized Save Unit patterns.");
     }
     if (state === "compatible_direct") {
       if (adapterRequirement.requirement === "required") {

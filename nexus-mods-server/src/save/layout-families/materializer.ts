@@ -21,6 +21,10 @@ function patternRegex(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`, "i");
 }
 
+export function matchesRecipePathPattern(relativePath: string, pattern: string): boolean {
+  return patternRegex(pattern).test(relativePath);
+}
+
 async function boundedFiles(root: string): Promise<string[]> {
   const result: string[] = [];
   const queue: Array<{ absolutePath: string; relativePath: string; depth: number }> = [{ absolutePath: root, relativePath: "", depth: 0 }];

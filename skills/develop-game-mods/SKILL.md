@@ -27,6 +27,7 @@ Read [references/init-framework.md](references/init-framework.md).
 3. Create only the minimal project memory:
    - `PROJECT.md`
    - `.gitignore`
+   - `external-mods/` (local reference Mods; Git-ignored)
    - `docs/interface-matrix.md`
    - `docs/experiments.md`
    - `docs/pitfalls.md`

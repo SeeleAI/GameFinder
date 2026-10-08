@@ -169,6 +169,7 @@ export class SaveBackupService {
     saveContextId: string;
     unitId: string;
     reason: SaveBackupRecord["reason"];
+    managedPathsOverride?: ReadonlyArray<string>;
   }): Promise<Readonly<SaveBackupRecord>> {
     const context = await this.#contexts.getSaveContext(input.saveContextId);
     const unit = context.saveUnits.find(
@@ -180,6 +181,18 @@ export class SaveBackupService {
         "The requested Save Unit is not declared by the Save Context.",
         { details: { saveContextId: input.saveContextId, unitId: input.unitId } },
       );
+    }
+    const effectiveUnit = input.managedPathsOverride
+      ? {
+          ...unit,
+          essential: [...new Set(input.managedPathsOverride)],
+          companions: [],
+          auxiliary: [],
+          managedPaths: [...new Set(input.managedPathsOverride)],
+        }
+      : unit;
+    if (effectiveUnit.managedPaths.length === 0) {
+      throw new NexusError("SAVE_BACKUP_INVALID", "The requested Save Unit backup scope is empty.");
     }
     const root = context.saveRoots.find((candidate) => candidate.role === "primary");
     if (!root) {
@@ -197,18 +210,18 @@ export class SaveBackupService {
         unitId: unit.unitId,
         attempt,
       });
-      const pre = await snapshotManagedState({ context, root, unit });
+      const pre = await snapshotManagedState({ context, root, unit: effectiveUnit });
       await this.#faultInjector?.checkpoint("after_source_snapshot", {
         saveContextId: context.saveContextId,
         unitId: unit.unitId,
         attempt,
       });
       const files: SaveBackupRecord["files"] = [];
-      for (const declared of unitPaths(unit)) {
+      for (const declared of unitPaths(effectiveUnit)) {
         const resolved = resolveSaveTarget({
           saveRoot: root.absolutePath,
           targetRelativePath: declared.relativePath,
-          managedPaths: unit.managedPaths,
+          managedPaths: effectiveUnit.managedPaths,
         });
         const info = await stat(resolved.targetAbsolutePath).catch(
           (error: unknown) => {
@@ -258,7 +271,7 @@ export class SaveBackupService {
           relativePath: declared.relativePath,
         });
       }
-      const post = await snapshotManagedState({ context, root, unit });
+      const post = await snapshotManagedState({ context, root, unit: effectiveUnit });
       if (pre.stateHash !== post.stateHash) {
         if (attempt < 2) continue;
         throw new NexusError(

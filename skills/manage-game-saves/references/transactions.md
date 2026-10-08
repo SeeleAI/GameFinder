@@ -16,6 +16,8 @@ Call `create_save_backup(saveContextId, unitId, reason)` and then `verify_save_b
 
 Use `assess_save_adapter_requirement` for the exact operation, then `assess_save_package_compatibility`. Same-account complete-container replacement may use `plan_save_replacement` only when both assessments permit it and their IDs/hashes are bound. Game-specific conversion or slot import requires the corresponding adapter workflow; never downgrade unknown account binding to direct compatibility.
 
+For a V2 `replace-whole-unit` request, the Package file set is the exact desired final Save Unit: create Package paths that are absent, replace or preserve matching paths, and delete currently materialized managed files that are absent from the Package. Do not require source paths to already exist under the same target name. Every new exact path must first match the bound Recipe's managed patterns and be frozen in Compatibility and the Replacement Plan. Treat path-preserving overlay/merge and slot import as different operations; do not silently substitute either for whole-unit replacement.
+
 Call `plan_save_replacement` (or the game-specific plan tool) with `reviewMode: "auto_safe"`. Pass `always_review` only when the user explicitly requests a preview/confirmation gate.
 
 For any real replacement:

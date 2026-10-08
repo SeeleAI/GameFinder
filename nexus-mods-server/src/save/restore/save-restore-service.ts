@@ -233,6 +233,7 @@ export class SaveRestoreService {
     mode: SaveRestorePlan["mode"];
     targetKind?: SaveRestorePlan["target"]["kind"];
     reviewMode?: PlanReviewMode;
+    additionalManagedPaths?: ReadonlyArray<string>;
   }): Promise<Readonly<SaveRestorePlan>> {
     const [backup, context] = await Promise.all([
       this.#backups.verifyBackup(input.backupId),
@@ -240,6 +241,10 @@ export class SaveRestoreService {
     ]);
     this.#assertBackupMatchesContext(backup, context);
     const unit = this.#unit(context, backup.unitId);
+    const managedPaths = [...new Set([
+      ...unit.managedPaths,
+      ...(input.additionalManagedPaths ?? []),
+    ])];
     const primary = this.#primaryRoot(context);
     const target =
       (input.targetKind ?? "save-context") === "sandbox"
@@ -262,7 +267,7 @@ export class SaveRestoreService {
       const resolved = resolveSaveTarget({
         saveRoot: target.absolutePath,
         targetRelativePath: file.relativePath,
-        managedPaths: unit.managedPaths,
+        managedPaths,
       });
       await assertNoSaveReparsePointTraversal(
         resolved.saveRoot,
@@ -299,12 +304,12 @@ export class SaveRestoreService {
       });
     }
     if (input.mode === "exact_managed_snapshot") {
-      for (const relativePath of unit.managedPaths) {
+      for (const relativePath of managedPaths) {
         if (backupByPath.has(relativePath.toLowerCase())) continue;
         const resolved = resolveSaveTarget({
           saveRoot: target.absolutePath,
           targetRelativePath: relativePath,
-          managedPaths: unit.managedPaths,
+          managedPaths,
         });
         await assertNoSaveReparsePointTraversal(
           resolved.saveRoot,
@@ -438,6 +443,14 @@ export class SaveRestoreService {
             saveContextId: context.saveContextId,
             unitId: plan.rescueUnitId,
             reason: "pre_restore_rescue",
+            managedPathsOverride: [
+              ...plan.operations
+                .filter((operation) => operation.expectedPreState.kind === "file")
+                .map((operation) => operation.targetRelativePath),
+              ...(plan.preservedPaths ?? [])
+                .filter((preserved) => preserved.expectedState.kind === "file")
+                .map((preserved) => preserved.relativePath),
+            ],
           });
           await this.#backups.verifyBackup(rescue.backupId);
           rescueBackupId = rescue.backupId;
@@ -473,12 +486,13 @@ export class SaveRestoreService {
       await transaction.append("applying", "Applying restore operations.");
 
       const unit = this.#unit(context, plan.rescueUnitId);
+      const managedPaths = this.#planManagedPaths(plan, unit);
       for (const operation of plan.operations) {
         await this.#checkpoint("before_target_write", plan, transaction, operation.operationId);
         const resolved = resolveSaveTarget({
           saveRoot: plan.target.absolutePath,
           targetRelativePath: operation.targetRelativePath,
-          managedPaths: unit.managedPaths,
+          managedPaths,
         });
         await assertNoSaveReparsePointTraversal(
           resolved.saveRoot,
@@ -643,11 +657,12 @@ export class SaveRestoreService {
     phase: "pre" | "post",
   ): Promise<void> {
     const unit = this.#unit(context, plan.rescueUnitId);
+    const managedPaths = this.#planManagedPaths(plan, unit);
     for (const operation of plan.operations) {
       const resolved = resolveSaveTarget({
         saveRoot: plan.target.absolutePath,
         targetRelativePath: operation.targetRelativePath,
-        managedPaths: unit.managedPaths,
+        managedPaths,
       });
       await assertNoSaveReparsePointTraversal(
         resolved.saveRoot,
@@ -677,7 +692,7 @@ export class SaveRestoreService {
       const resolved = resolveSaveTarget({
         saveRoot: plan.target.absolutePath,
         targetRelativePath: preserved.relativePath,
-        managedPaths: unit.managedPaths,
+        managedPaths,
       });
       await assertNoSaveReparsePointTraversal(
         resolved.saveRoot,
@@ -698,6 +713,17 @@ export class SaveRestoreService {
         );
       }
     }
+  }
+
+  #planManagedPaths(
+    plan: SaveRestorePlan,
+    unit: SaveContext["saveUnits"][number],
+  ): string[] {
+    return [...new Set([
+      ...unit.managedPaths,
+      ...plan.operations.map((operation) => operation.targetRelativePath),
+      ...(plan.preservedPaths ?? []).map((preserved) => preserved.relativePath),
+    ])];
   }
 
   #validateFrozenTarget(plan: SaveRestorePlan, context: SaveContext): void {

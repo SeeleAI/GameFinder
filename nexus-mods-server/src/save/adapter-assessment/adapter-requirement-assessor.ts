@@ -32,7 +32,7 @@ export interface AdapterRequirementAssessmentResult {
 
 const MAX_STATIC_SAMPLE_BYTES = 64 * 1024 * 1024;
 const ASSESSOR_ID = "adapter-requirement-assessor";
-const ASSESSOR_VERSION = "1.0.0";
+const ASSESSOR_VERSION = "1.1.0";
 
 function joinManagedPath(root: string, relativePath: string): string {
   const resolved = path.resolve(root, ...relativePath.split("/"));
@@ -446,24 +446,23 @@ export class AdapterRequirementAssessor {
     let valid = true;
     const evidence: AdapterRequirementAssessment["evidence"] = [];
     for (const source of savePackage.payload.files) {
-      const target = unit.materializedFiles.find(
-        (candidate) => candidate.relativePath.toLocaleLowerCase("en-US") === source.relativePath.toLocaleLowerCase("en-US"),
-      );
-      if (!target) {
-        valid = false;
-        continue;
-      }
       const object = await this.packages.objectStore.get(source.objectId);
-      const [sourceBytes, targetBytes] = await Promise.all([
-        readBounded(object.absolutePath),
-        readBounded(joinManagedPath(root.absolutePath, target.relativePath)).catch(() => null),
-      ]);
+      const sourceBytes = await readBounded(object.absolutePath);
       const sourceResult = sourceBytes ? adapter.validateBytes(sourceBytes) : { valid: false, detail: "Source fixture exceeds the bounded analysis scope." };
-      const targetResult = targetBytes ? adapter.validateBytes(targetBytes) : { valid: false, detail: "Target fixture is unavailable or exceeds the bounded analysis scope." };
-      valid &&= sourceResult.valid && targetResult.valid;
+      valid &&= sourceResult.valid;
       evidence.push({
         kind: "adapter-format-validation",
-        detail: `${source.relativePath}: source ${sourceResult.detail} Target ${targetResult.detail}`,
+        detail: `${source.relativePath}: source ${sourceResult.detail}`,
+        confidence: "confirmed",
+      });
+    }
+    for (const target of unit.materializedFiles) {
+      const targetBytes = await readBounded(joinManagedPath(root.absolutePath, target.relativePath)).catch(() => null);
+      const targetResult = targetBytes ? adapter.validateBytes(targetBytes) : { valid: false, detail: "Target fixture is unavailable or exceeds the bounded analysis scope." };
+      valid &&= targetResult.valid;
+      evidence.push({
+        kind: "adapter-format-validation",
+        detail: `${target.relativePath}: target ${targetResult.detail}`,
         confidence: "confirmed",
       });
     }

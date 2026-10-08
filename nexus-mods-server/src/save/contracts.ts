@@ -513,7 +513,7 @@ export const saveReplacementPlanSchema = z.object({
   payloadPolicies: z.array(
     z.object({
       relativePath,
-      action: z.enum(["create", "replace", "preserve-identical"]),
+      action: z.enum(["create", "replace", "delete", "preserve-identical"]),
       expectedPreState: savePathStateSchema,
       expectedPostState: savePathStateSchema,
     }),
@@ -524,6 +524,7 @@ export const saveReplacementPlanSchema = z.object({
     "account_rebind",
     "format_conversion",
   ]),
+  replacementMode: z.enum(["overlay", "exact-unit"]).optional(),
   adapterId: identifier,
   sourceSlot: z.number().int().min(0).max(999).nullable(),
   targetSlot: z.number().int().min(0).max(999).nullable(),

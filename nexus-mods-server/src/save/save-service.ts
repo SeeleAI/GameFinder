@@ -33,6 +33,7 @@ import { SaveInstallResolverRegistryV2 } from "./install-resolvers/resolver-regi
 import type { PeMetadataReader } from "./install-resolvers/types.js";
 import { SaveLocationStrategyRegistryV2 } from "./location-strategies/registry.js";
 import { windowsSaveEnvironmentV2 } from "./location-strategies/windows-known-folders.js";
+import { materializeSaveUnitsV2 } from "./layout-families/materializer.js";
 import type {
   GameInstallContext,
   GameSaveProfile,
@@ -338,6 +339,7 @@ export class SaveService {
       contexts: saveContextsV2,
       packages: normalizer,
       adapterRequirements,
+      recipes: recipesV2,
     });
     const replacements = await SaveReplacementService.create({
       managerRoot: options.managerRoot,
@@ -541,7 +543,27 @@ export class SaveService {
     targetKind?: SaveRestorePlan["target"]["kind"];
     reviewMode?: PlanReviewMode;
   }): Promise<Readonly<SaveRestorePlan>> {
-    return await this.#restores.planRestore(input);
+    let additionalManagedPaths: string[] | undefined;
+    try {
+      const [context, backup] = await Promise.all([
+        this.#saveContextsV2.get(input.saveContextId),
+        this.#backups.verifyBackup(input.backupId),
+      ]);
+      const recipe = this.#recipesV2.findById(context.recipe.recipeId);
+      const root = context.saveRoots.find((candidate) => candidate.role === "primary");
+      if (recipe && recipe.recipeHash === context.recipe.recipeHash && root) {
+        const materialized = await materializeSaveUnitsV2(root.absolutePath, recipe);
+        additionalManagedPaths = materialized
+          .find((candidate) => candidate.unitId === backup.unitId)
+          ?.files.map((file) => file.relativePath);
+      }
+    } catch (error) {
+      if (!(error instanceof NexusError) || error.code !== "NOT_FOUND") throw error;
+    }
+    return await this.#restores.planRestore({
+      ...input,
+      ...(additionalManagedPaths === undefined ? {} : { additionalManagedPaths }),
+    });
   }
 
   async getSaveRestorePlan(
@@ -886,7 +908,13 @@ export class SaveService {
       warnings: compatibilityV2.warnings,
       assessedAt: compatibilityV2.assessedAt,
     });
-    return await this.#replacements.planReplacement(input);
+    return await this.#replacements.planReplacement({
+      ...input,
+      replacementMode: "exact-unit",
+      authorizedTargetPaths: compatibilityV2.targetMappings.map(
+        (mapping) => mapping.targetRelativePath,
+      ),
+    });
   }
 
   async planEldenRingStagedReplacement(

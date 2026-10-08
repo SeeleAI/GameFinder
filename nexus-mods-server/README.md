@@ -263,6 +263,8 @@ The save tools support composable Windows distribution/location/layout Recipes, 
 
 Before external-save replacement, call `assess_save_adapter_requirement`, then `assess_save_package_compatibility`. `undetermined` and `required+missing` block a real Replacement Plan. A missing required Adapter produces a hash-verified Development Brief; missing Resolver, Location Strategy, Layout Family, or Recipe knowledge is reported as that generic extension target instead of being mislabeled as game-specific binary work.
 
+V2 `replace-whole-unit` uses exact-set semantics: the Package paths become the final Save Unit, so the Plan can create Recipe-authorized new filenames and delete previously materialized managed files omitted by the Package. Legacy V1 `direct_replace` retains overlay semantics for compatibility; slot remapping remains a separate workflow.
+
 Every live restore or replacement freezes an immutable Plan with deterministic review metadata. Apply rechecks target prestate and stopped-process guards, creates a verified rescue backup before the first target write, verifies the committed result, and rolls back on failure. Static verification does not replace user-observed in-game runtime verification.
 
 ## Browser configuration

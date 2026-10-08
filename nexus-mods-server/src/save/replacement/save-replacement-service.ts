@@ -185,6 +185,8 @@ export class SaveReplacementService {
     assessmentId: string;
     strategy: "direct_replace";
     reviewMode?: PlanReviewMode;
+    replacementMode?: "overlay" | "exact-unit";
+    authorizedTargetPaths?: ReadonlyArray<string>;
   }): Promise<Readonly<SaveReplacementPlan>> {
     const assessment = await this.#assessments.get(input.assessmentId);
     if (
@@ -210,7 +212,23 @@ export class SaveReplacementService {
     const root = this.#primaryRoot(context);
     const operations: SaveReplacementPlan["operations"] = [];
     const payloadPolicies: SaveReplacementPlan["payloadPolicies"] = [];
+    const replacementMode = input.replacementMode ?? "overlay";
+    const authorizedTargetPaths = replacementMode === "exact-unit"
+      ? [...new Set(input.authorizedTargetPaths ?? [])]
+      : unit.managedPaths;
+    const managedPaths = [...new Set([...unit.managedPaths, ...authorizedTargetPaths])];
+    const sourcePaths = new Set(
+      savePackage.payload.files.map((file) => file.relativePath.toLocaleLowerCase("en-US")),
+    );
     for (const file of savePackage.payload.files) {
+      if (
+        replacementMode === "exact-unit" &&
+        !authorizedTargetPaths.some(
+          (candidate) => candidate.toLocaleLowerCase("en-US") === file.relativePath.toLocaleLowerCase("en-US"),
+        )
+      ) {
+        throw new NexusError("SAVE_PATH_PROTECTED", "A package target was not authorized by the V2 Compatibility Assessment.");
+      }
       const object = await this.#packages.objectStore.get(file.objectId);
       if (
         object.objectKind !== "file" ||
@@ -222,7 +240,7 @@ export class SaveReplacementService {
       const resolved = resolveSaveTarget({
         saveRoot: root.absolutePath,
         targetRelativePath: file.relativePath,
-        managedPaths: unit.managedPaths,
+        managedPaths,
       });
       await assertNoSaveReparsePointTraversal(resolved.saveRoot, resolved.targetAbsolutePath);
       const pre = comparableState(await inspectPathState(resolved.targetAbsolutePath));
@@ -252,6 +270,38 @@ export class SaveReplacementService {
         expectedPostState: post,
       });
     }
+    if (replacementMode === "exact-unit") {
+      for (const relativePath of unit.managedPaths) {
+        if (sourcePaths.has(relativePath.toLocaleLowerCase("en-US"))) continue;
+        const resolved = resolveSaveTarget({
+          saveRoot: root.absolutePath,
+          targetRelativePath: relativePath,
+          managedPaths,
+        });
+        await assertNoSaveReparsePointTraversal(resolved.saveRoot, resolved.targetAbsolutePath);
+        const pre = comparableState(await inspectPathState(resolved.targetAbsolutePath));
+        if (pre.kind === "absent") continue;
+        if (pre.kind === "directory") {
+          throw new NexusError("SAVE_TARGET_DRIFTED", "An exact-unit replacement target is a directory.");
+        }
+        const post: SavePathState = { kind: "absent" };
+        payloadPolicies.push({
+          relativePath,
+          action: "delete",
+          expectedPreState: pre,
+          expectedPostState: post,
+        });
+        operations.push({
+          operationId: randomUUID(),
+          kind: "delete-file",
+          rootId: root.rootId,
+          targetRelativePath: relativePath,
+          sourceObjectId: null,
+          expectedPreState: pre,
+          expectedPostState: post,
+        });
+      }
+    }
     operations.sort((left, right) => left.targetRelativePath.localeCompare(right.targetRelativePath));
     payloadPolicies.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
     const target = { rootId: root.rootId, absolutePath: root.absolutePath };
@@ -264,6 +314,7 @@ export class SaveReplacementService {
       target,
       payloadPolicies,
       strategy: "direct_replace",
+      replacementMode,
       adapterId: context.format.adapterId ?? "unknown",
       sourceSlot: null,
       targetSlot: null,
@@ -290,6 +341,7 @@ export class SaveReplacementService {
         ],
         decisionInputs: {
           strategy: input.strategy,
+          replacementMode,
           target,
           operations,
           payloadPolicies,
@@ -492,6 +544,7 @@ export class SaveReplacementService {
 
       await mkdir(stagingRoot, { recursive: false });
       for (const operation of plan.operations) {
+        if (operation.kind === "delete-file") continue;
         if (!operation.sourceObjectId) {
           throw new NexusError("SAVE_PACKAGE_INVALID", "Replacement operation has no source object.");
         }
@@ -508,12 +561,13 @@ export class SaveReplacementService {
         ? "Applying frozen Elden Ring slot-import replacement operation."
         : "Applying direct save replacement operations.");
       const unit = this.#unit(context, plan.rescueUnitId);
+      const managedPaths = this.#planManagedPaths(plan, unit);
       for (const operation of plan.operations) {
         await this.#checkpoint("before_target_write", plan, transaction, operation.operationId);
         const resolved = resolveSaveTarget({
           saveRoot: plan.target.absolutePath,
           targetRelativePath: operation.targetRelativePath,
-          managedPaths: unit.managedPaths,
+          managedPaths,
         });
         await assertNoSaveReparsePointTraversal(resolved.saveRoot, resolved.targetAbsolutePath);
         const actualPre = comparableState(await inspectPathState(resolved.targetAbsolutePath));
@@ -527,16 +581,18 @@ export class SaveReplacementService {
             : `${resolved.targetAbsolutePath}.gamefinder-rollback-${transaction.transactionId}`;
         if (rollbackPath) await rename(resolved.targetAbsolutePath, rollbackPath);
         applied.push({ targetPath: resolved.targetAbsolutePath, rollbackPath });
-        const temporary = `${resolved.targetAbsolutePath}.gamefinder-new-${transaction.transactionId}`;
-        await copyFile(
-          path.join(stagingRoot, operation.operationId),
-          temporary,
-          constants.COPYFILE_EXCL,
-        );
-        try {
-          await rename(temporary, resolved.targetAbsolutePath);
-        } finally {
-          await rm(temporary, { force: true }).catch(() => undefined);
+        if (operation.kind !== "delete-file") {
+          const temporary = `${resolved.targetAbsolutePath}.gamefinder-new-${transaction.transactionId}`;
+          await copyFile(
+            path.join(stagingRoot, operation.operationId),
+            temporary,
+            constants.COPYFILE_EXCL,
+          );
+          try {
+            await rename(temporary, resolved.targetAbsolutePath);
+          } finally {
+            await rm(temporary, { force: true }).catch(() => undefined);
+          }
         }
         await this.#checkpoint("after_target_write", plan, transaction, operation.operationId);
       }
@@ -618,11 +674,12 @@ export class SaveReplacementService {
     phase: "pre" | "post",
   ): Promise<void> {
     const unit = this.#unit(context, plan.rescueUnitId);
+    const managedPaths = this.#planManagedPaths(plan, unit);
     for (const operation of plan.operations) {
       const resolved = resolveSaveTarget({
         saveRoot: plan.target.absolutePath,
         targetRelativePath: operation.targetRelativePath,
-        managedPaths: unit.managedPaths,
+        managedPaths,
       });
       const actual = comparableState(await inspectPathState(resolved.targetAbsolutePath));
       const expected = phase === "pre" ? operation.expectedPreState : operation.expectedPostState;
@@ -642,7 +699,7 @@ export class SaveReplacementService {
       const resolved = resolveSaveTarget({
         saveRoot: plan.target.absolutePath,
         targetRelativePath: policy.relativePath,
-        managedPaths: unit.managedPaths,
+        managedPaths,
       });
       const actual = comparableState(await inspectPathState(resolved.targetAbsolutePath));
       const expected = phase === "pre" ? policy.expectedPreState : policy.expectedPostState;
@@ -654,6 +711,17 @@ export class SaveReplacementService {
         );
       }
     }
+  }
+
+  #planManagedPaths(
+    plan: SaveReplacementPlan,
+    unit: SaveContext["saveUnits"][number],
+  ): string[] {
+    return [...new Set([
+      ...unit.managedPaths,
+      ...plan.operations.map((operation) => operation.targetRelativePath),
+      ...plan.payloadPolicies.map((policy) => policy.relativePath),
+    ])];
   }
 
   #validatePlanBindings(

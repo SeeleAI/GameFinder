@@ -49,6 +49,8 @@ describe("save V2 location, layout, backup, and restore", () => {
       writeFile(path.join(saveRoot, "game.log"), "unmanaged"),
       writeFile(path.join(saveRoot, "Screenshots", "shot.png"), "unmanaged screenshot"),
     ]);
+    let failAfterReplacementWrites: number | null = null;
+    let replacementWriteCount = 0;
     const service = await SaveService.create({
       managerRoot: path.join(root, "manager"),
       environment: {
@@ -65,6 +67,15 @@ describe("save V2 location, layout, backup, and restore", () => {
         productVersion: "fixture",
       }),
       processGuard: async () => undefined,
+      replacementFaultInjector: {
+        checkpoint: async (checkpoint) => {
+          if (checkpoint !== "after_target_write" || failAfterReplacementWrites === null) return;
+          replacementWriteCount += 1;
+          if (replacementWriteCount === failAfterReplacementWrites) {
+            throw new Error("injected exact-unit replacement failure");
+          }
+        },
+      },
     });
     const install = await service.probeGameInstall({ gameRoot, resolverHint: "rune-steam-emulator" });
     const context = await service.resolveSaveLocations(install.installContextId) as unknown as {
@@ -118,8 +129,7 @@ describe("save V2 location, layout, backup, and restore", () => {
     const externalRoot = path.join(root, "downloaded-save", "GoT 100 percent");
     await mkdir(externalRoot, { recursive: true });
     await Promise.all([
-      writeFile(path.join(externalRoot, "auto.sav"), gotPcV49Save(0x33)),
-      writeFile(path.join(externalRoot, "manual_0000.sav"), gotPcV49Save(0x44)),
+      writeFile(path.join(externalRoot, "manual_0028.sav"), gotPcV49Save(0x44)),
       writeFile(path.join(externalRoot, "README.txt"), "author claim only"),
     ]);
     const inspection = await service.inspectSaveInput(path.dirname(externalRoot), {
@@ -132,8 +142,7 @@ describe("save V2 location, layout, backup, and restore", () => {
       unitId: "main-saves",
       layoutFamily: "slot-file-set",
       files: [
-        { sourcePath: "GoT 100 percent/auto.sav", relativePath: "auto.sav" },
-        { sourcePath: "GoT 100 percent/manual_0000.sav", relativePath: "manual_0000.sav", slot: { index: 0 } },
+        { sourcePath: "GoT 100 percent/manual_0028.sav", relativePath: "manual_0028.sav", slot: { index: 28 } },
       ],
     });
     expect(JSON.stringify(inspection.payloadCandidates)).not.toContain("README.txt");
@@ -197,7 +206,7 @@ describe("save V2 location, layout, backup, and restore", () => {
       },
       developmentBrief: null,
     });
-    expect(replacementRequirement.assessment.evidence.filter((item) => item.kind === "adapter-format-validation")).toHaveLength(2);
+    expect(replacementRequirement.assessment.evidence.filter((item) => item.kind === "adapter-format-validation")).toHaveLength(3);
 
     const versionRequirement = await service.assessSaveAdapterRequirement({
       saveContextId: context.saveContextId,
@@ -237,8 +246,7 @@ describe("save V2 location, layout, backup, and restore", () => {
       adapterRequirementAssessmentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(compatibility.targetMappings.map((mapping) => mapping.targetRelativePath)).toEqual([
-      "auto.sav",
-      "manual_0000.sav",
+      "manual_0028.sav",
     ]);
     const replacementPlan = await service.planSaveReplacement({
       assessmentId: (compatibility as unknown as { assessmentId: string }).assessmentId,
@@ -248,16 +256,19 @@ describe("save V2 location, layout, backup, and restore", () => {
       rescueUnitId: "main-saves",
       adapterId: "ghost-of-tsushima-pc-v49",
       strategy: "direct_replace",
+      replacementMode: "exact-unit",
       operations: [
-        { targetRelativePath: "auto.sav" },
-        { targetRelativePath: "manual_0000.sav" },
+        { kind: "delete-file", targetRelativePath: "auto.sav" },
+        { kind: "delete-file", targetRelativePath: "manual_0000.sav" },
+        { kind: "create-file", targetRelativePath: "manual_0028.sav" },
       ],
     });
     const replaced = await service.applySaveReplacement(replacementPlan.replacementPlanId);
     expect(replaced.record.staticVerification).toBe("passed");
     expect(replaced.rescueBackupId).toEqual(expect.any(String));
-    expect(await readFile(path.join(saveRoot, "auto.sav"))).toEqual(gotPcV49Save(0x33));
-    expect(await readFile(path.join(saveRoot, "manual_0000.sav"))).toEqual(gotPcV49Save(0x44));
+    await expect(readFile(path.join(saveRoot, "auto.sav"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(saveRoot, "manual_0000.sav"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(saveRoot, "manual_0028.sav"))).toEqual(gotPcV49Save(0x44));
     expect((await service.verifySaveReplacement(replaced.record.recordId)).staticVerification).toBe("passed");
 
     const baselineRestore = await service.planSaveRestore({
@@ -270,6 +281,19 @@ describe("save V2 location, layout, backup, and restore", () => {
     expect((await service.verifySaveRestore(restored.record.recordId)).staticVerification).toBe("passed");
     expect(await readFile(path.join(saveRoot, "auto.sav"))).toEqual(gotPcV49Save(0x11));
     expect(await readFile(path.join(saveRoot, "manual_0000.sav"))).toEqual(gotPcV49Save(0x22));
+    await expect(readFile(path.join(saveRoot, "manual_0028.sav"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    const rollbackPlan = await service.planSaveReplacement({
+      assessmentId: (compatibility as unknown as { assessmentId: string }).assessmentId,
+      strategy: "direct_replace",
+    });
+    failAfterReplacementWrites = 3;
+    replacementWriteCount = 0;
+    await expect(service.applySaveReplacement(rollbackPlan.replacementPlanId))
+      .rejects.toThrow("injected exact-unit replacement failure");
+    expect(await readFile(path.join(saveRoot, "auto.sav"))).toEqual(gotPcV49Save(0x11));
+    expect(await readFile(path.join(saveRoot, "manual_0000.sav"))).toEqual(gotPcV49Save(0x22));
+    await expect(readFile(path.join(saveRoot, "manual_0028.sav"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("uses Recipe-scoped Windows roots for a bounded differential fallback", async () => {

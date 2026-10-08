@@ -13,3 +13,5 @@ Use `get_save_adapter_requirement_assessment` to re-read and hash-verify the res
 The assessment distinguishes missing Resolver, Location Strategy, Layout Family, Recipe, and format-Adapter capabilities. Fix the indicated declarative/generic layer before proposing game-specific binary code. File extensions, author instructions, equal prefixes, and failure to find an account ID in common encodings are not positive compatibility evidence.
 
 Compatibility must bind the current Adapter Requirement Assessment ID and hash. A changed Context, Package, Recipe, operation, or assessment requires reassessment; do not reuse an earlier Compatibility Assessment or Replacement Plan.
+
+For exact whole-unit replacement, validate the Package source set and current target set independently. Different filenames are not an Adapter scope mismatch when every source path is Recipe-authorized and every relevant file passes the scoped format validator; filename-to-filename pairing is required only by an explicitly selected mapping or slot-import operation.

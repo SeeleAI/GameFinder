@@ -1213,3 +1213,11 @@ G6 完成后，当前 MCP 已支持 Ghost of Tsushima 的安装识别、静态�
 - GOT-12 使用与早期 acceptance baseline 相同 tree hash `1373a8d44cb1809ef6ab9b33ef7850928578ed548f0099bf051fe8d29d88c9e0`、且绑定当前 Context 的替换前 rescue 作为恢复源。Restore Plan `829e47f9-ea63-4825-82bb-91f0a8701bd5`，hash `d5c3646d9a8f841d7b6361f6febc5da6b81610cca4ee23735618e4388e4f163a`；Operation Record `3ee43ebb-9b05-42a0-b739-baa9a984f848`，hash `3a2dd91616087ad4a7d4e0cf45ebc29590d0a14a5b48b1dbf51b85eca2abe683`；恢复前 rescue `4d40a338-cf17-4c7c-bdc5-c9247f867a39`。
 - baseline 应用后静态验证通过，用户进入游戏确认原始存档身份；游戏随后正常更新 `auto.sav`，`manual_0000.sav` 仍与 baseline 字节一致。系统保留该 post-launch live state，并以 Runtime Verification `642b3eec-a273-4ace-b81c-78a73a0cfc02` 记录 `original_restored`，未再次覆盖自动保存。
 - G7 完整回归：TypeScript check/build 通过；41 个测试文件通过、3 个按配置跳过；234 项测试通过、20 项按配置跳过；stdio smoke 通过（107 tools，未启动浏览器）；`git diff --check` 通过。
+
+### G8 exact whole-unit 语义修复（2026-08-20）
+
+- 修复 G7 验收包文件名恰好同名而未暴露的语义缺口：V2 `replace-whole-unit` 不再按同名 overlay，而是以 Package 文件集合为最终 Save Unit 集合；旧 V1 `direct_replace` 保持 overlay 以兼容历史调用。
+- Adapter 分别验证 Package source set 与当前 target set，不再要求 `manual_0028.sav` 必须存在同名本地目标；Compatibility 仍要求每个新目标路径匹配绑定 Recipe 的 `managedPatterns`。
+- Replacement Plan 对集合差异冻结 `create-file`、`replace-file`、`delete-file` 和 `preserve-identical`；Plan 执行范围只增加已由 Compatibility 授权并冻结的精确路径。
+- Restore 规划重新物化当前 V2 Save Unit，并用当前集合创建恢复前 rescue，因此可从仅含 `manual_0028.sav` 的替换结果精确恢复到原 `auto.sav + manual_0000.sav`，不会遗留新增文件。
+- 合成回归直接覆盖目标 `auto.sav + manual_0000.sav`、来源仅 `manual_0028.sav`：计划产生两项删除和一项创建；应用、静态验证、baseline restore 及三次写入后的故障回滚均通过。

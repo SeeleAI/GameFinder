@@ -472,7 +472,7 @@ export class SaveInputInspector {
     let archive: SaveInputInspection["archive"] = null;
     if (info.isDirectory()) {
       kind = "directory";
-      const tree = await inspectDirectoryTree(absolutePath);
+      const tree = await inspectDirectoryTree(absolutePath, this.#limits);
       inputSha256 = tree.treeHash;
       inputBytes = tree.totalBytes;
       entries = [
@@ -610,6 +610,7 @@ export class SaveInputInspector {
     } else {
       throw new NexusError("SAVE_INPUT_UNSUPPORTED", "Save input must be a regular file or directory.");
     }
+    validateEntries(entries, this.#limits);
     const payloadCandidates = target
       ? identifyRecipePayloads(entries, target.recipe, target.unitId)
       : identifyLegacyEldenRingPayloads(entries);

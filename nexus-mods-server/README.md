@@ -259,13 +259,24 @@ Apply revalidates dependency and filesystem state. Unmanaged generated files may
 
 ## Windows game-save workflow
 
-The save tools support composable Windows distribution/location/layout Recipes, external-source inspection, Standard Save Packages V2, operation-scoped Adapter Requirement Assessment, verified content-addressed backups, sandbox or live restore, Adapter-validated exact replacement, and Elden Ring staged slot import. Built-in format support currently includes Elden Ring slot import and validation-scoped Ghost of Tsushima PC v49 exact replacement.
+The default workflow starts from a game name, installation root, and canonical Nexus game page. The agent researches the installed version, actual save directory/player, and applicable source; general Nexus tools (`resolve_game`, `search_mods`, `get_mod`, `get_mod_files`, `prepare_download`) work without an Install Context. Recipes are optional knowledge, not eligibility requirements for ordinary imports.
 
-Before external-save replacement, call `assess_save_adapter_requirement`, then `assess_save_package_compatibility`. `undetermined` and `required+missing` block a real Replacement Plan. A missing required Adapter produces a hash-verified Development Brief; missing Resolver, Location Strategy, Layout Family, or Recipe knowledge is reported as that generic extension target instead of being mislabeled as game-specific binary work.
+Use the generic file workflow:
 
-V2 `replace-whole-unit` uses exact-set semantics: the Package paths become the final Save Unit, so the Plan can create Recipe-authorized new filenames and delete previously materialized managed files omitted by the Package. Legacy V1 `direct_replace` retains overlay semantics for compatibility; slot remapping remains a separate workflow.
+1. `inspect_save_input` with `stage: true` safely inspects/stages a source file, directory, or archive and lists its contents outside live saves.
+2. `plan_save_import` takes `inputPath`, a specific `targetRoot`, relative `mappings: [{sourcePath, targetPath}]`, optional `deletePaths`, relevant `processNames`, and `evidence` (`gameName`, `installationRoot`, `source`, `target`, `compatibility`, `method`, `knownConversionRequired`). Evidence records concrete sources and local corroboration; the tool does not independently prove gameplay compatibility.
+3. `apply_save_import(planId)` rechecks stopped writers and target state, verifies a backup of affected originals, applies the precise frozen operations, and verifies their result. Failures are journaled and rolled back; multi-file writes are recoverable, not a claim of filesystem-wide atomicity.
+4. `get_save_import(planId)` returns durable status after success, failure, or a lost response. `restore_save_import(planId)` restores affected originals, retaining the recovery-time state and unrelated files. Use the recorded operation for recovery rather than blindly creating another import.
 
-Every live restore or replacement freezes an immutable Plan with deterministic review metadata. Apply rechecks target prestate and stopped-process guards, creates a verified rescue backup before the first target write, verifies the committed result, and rolls back on failure. Static verification does not replace user-observed in-game runtime verification.
+Unmapped target files remain in place. Deletes require explicit paths and justification; omissions from the source do not imply removal. The generic route needs no Profile, Recipe, Save Context, Package, or Assessment ID. Opaque complete files can be imported with applicable evidence even when internal checksums are unknown. Actual account rebinding, slot merging, resigning, or version conversion requires specialized support before import.
+
+For Nexus downloads, use `backend: "persistent_chromium"` and retain the complete MCP response including `structuredContent` and the returned `download.sessionId`. Start and poll that ID on the same server instance. Missing IDs or a lost instance are blockers, not reasons to prepare again or launch a replacement server/profile. Open login at most once, only after that same session reports `login_required` or `requiresUserInteraction`; after interaction restart the original session with the original output directory. See the skill's [download protocol](../skills/manage-game-saves/references/nexus-download.md).
+
+Successful imports remain installed with a backup. Report file verification separately from observed in-game loading/progress; a normal auto-save after launch can change hashes without invalidating the import record. Restore only for requested rollback/temporary testing or failure recovery.
+
+Existing Recipe/Context/Package tools remain available for legacy operations, backup records, Elden Ring staged character-slot import, and validation-scoped Ghost of Tsushima PC v49 replacement. Their `assess_save_adapter_requirement` / `assess_save_package_compatibility` chain retains its own gates. V2 `replace-whole-unit` uses exact managed-set semantics (including deletion of omitted managed files); legacy V1 `direct_replace` overlays. Neither behavior overrides the generic route's explicit file mappings. See [special-format routing](../skills/manage-game-saves/references/special-formats.md).
+
+After updating the build, new server processes expose the new tools. Restart/reconnect in a fresh client session when needed; never terminate or substitute the server hosting an active download session.
 
 ## Browser configuration
 

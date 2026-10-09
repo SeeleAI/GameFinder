@@ -29,7 +29,7 @@ GameFinder/
 |   |-- develop-game-mods/          Mod research, implementation, and project scaffolding
 |   |-- download-nexus-mods/        Verified Nexus downloads and dependency bundles
 |   |-- install-game-mods/          Evidence-driven transactional installation
-|   |-- manage-game-saves/          Backup, restore, replacement, and slot import
+|   |-- manage-game-saves/          Save research, download, backup, import, and recovery
 |   |-- research-nexus-mods/        Nexus discovery and comparison
 |   `-- uninstall-game-mods/        Managed file-Mod removal and verification
 `-- README.md
@@ -47,16 +47,31 @@ The optional `agents/openai.yaml` files under skill directories provide OpenAI-s
 | Downloads | Native/NXM and persistent Chromium flows, receipts, dependency plans, and Bundle Manifests |
 | Installation | Contract V2 evidence, reusable Methods, bounded file operations, controlled installers, rollback, and verification |
 | Uninstallation | Public inspect/plan/get/apply/verify tools for committed managed file transactions, including dependent and dirty-file blockers |
-| Game saves | Composable discovery Recipes, packages, verified backups, restore, Adapter-validated replacement, Elden Ring slot import, Ghost of Tsushima PC v49 exact replacement, rescue, rollback, and runtime evidence |
+| Game saves | Agent-led discovery and Nexus downloads; generic file import with precise mappings, verified backup, rollback, and recovery without a registered Recipe; existing Elden Ring slot and Ghost of Tsushima format support |
 | Mod development | Minimal project memory, interface research, bounded probes, implementation guidance, and reusable cross-game references |
 
-The MCP classifies immutable write plans as:
+Mod workflows and legacy save workflows classify immutable write plans as:
 
 - `auto_safe` / `apply_now`: bounded work may continue in the same turn;
 - `review_required` / `request_confirmation`: a material risk or choice requires confirmation;
 - `blocked` / `stop`: the plan must not be applied.
 
 `reviewMode` defaults to `auto_safe`. This does not bypass blockers or transaction guards.
+
+Ordinary save imports use `inspect_save_input` -> `plan_save_import` -> `apply_save_import`, with `get_save_import` for status and `restore_save_import` for recovery. Agents establish the target and applicable method from local/web evidence; the tool freezes exact paths and verifies backup and file writes. No Recipe, Install Context, or binary-format assessment is required for this route. Unmapped saves are retained, and successful imports remain installed with their backups. In-game loading is verified separately.
+
+Example request:
+
+```text
+Use manage-game-saves to find and import the most complete, well-evidenced save
+compatible with my installed game. Complete selection, download, backup, import,
+and verification; keep the result. Pause only for login, unresolved ambiguity,
+or an actual blocker.
+
+Game: <game name>
+Installation root: <absolute path>
+Nexus game page: https://www.nexusmods.com/games/<slug>
+```
 
 ## Local setup
 

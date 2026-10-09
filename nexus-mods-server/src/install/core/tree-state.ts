@@ -38,6 +38,7 @@ function normalizedTreePath(value: string): string {
 
 export async function inspectDirectoryTree(
   rootAbsolutePath: string,
+  limits?: { maxEntries: number; maxSingleEntryBytes: number; maxTotalUncompressedBytes: number },
 ): Promise<DirectoryTreeState> {
   const root = path.resolve(rootAbsolutePath);
   const rootInfo = await lstat(root);
@@ -52,6 +53,7 @@ export async function inspectDirectoryTree(
   const files: TreeFile[] = [];
   const directories: TreeDirectory[] = [];
   const caseFoldedPaths = new Map<string, string>();
+  let totalSeenBytes = 0;
 
   async function walk(currentAbsolutePath: string, currentRelativePath: string): Promise<void> {
     const children = await readdir(currentAbsolutePath, { withFileTypes: true });
@@ -59,6 +61,9 @@ export async function inspectDirectoryTree(
       left.name.localeCompare(right.name, "en", { sensitivity: "variant" }),
     );
     for (const child of children) {
+      if (limits && files.length + directories.length >= limits.maxEntries) {
+        throw new NexusError("SAVE_ARCHIVE_UNSAFE", "Directory exceeds the entry limit.");
+      }
       const absolutePath = path.join(currentAbsolutePath, child.name);
       const relativePath = normalizedTreePath(
         currentRelativePath
@@ -92,6 +97,10 @@ export async function inspectDirectoryTree(
           "Staged and managed directory trees may contain only regular files and directories.",
           { path: absolutePath },
         );
+      }
+      totalSeenBytes += info.size;
+      if (limits && (info.size > limits.maxSingleEntryBytes || totalSeenBytes > limits.maxTotalUncompressedBytes)) {
+        throw new NexusError("SAVE_ARCHIVE_UNSAFE", "Directory exceeds the input byte limits.");
       }
       files.push({
         relativePath,

@@ -28,6 +28,7 @@ import {
   type PlanReviewAction
 } from "./plan-review.js";
 import type { SaveEnvironment } from "./save/context/environment.js";
+import { GenericSaveImportService, saveImportInputSchema } from "./save/generic/import-service.js";
 import type { SaveSourceFetch } from "./save/source/save-source-service.js";
 import {
   resolveDefaultSaveManagerRoot,
@@ -70,6 +71,16 @@ const preparedDownloadOutputSchema = {
 const preparedSaveDownloadOutputSchema = {
   ...preparedDownloadOutputSchema,
   candidateId: z.string().uuid()
+};
+
+const genericSaveResultSchema = {
+  ok: z.literal(true),
+  plan: z.object({ planId: z.string().uuid() }).passthrough(),
+  operation: z.object({ planId: z.string().uuid(), state: z.string() }).passthrough().nullable(),
+  backupFiles: z.array(z.object({}).passthrough()),
+  recoveryFiles: z.array(z.object({}).passthrough()),
+  recordPath: z.string(), backupRoot: z.string(), runtimeVerification: z.literal("not_performed"),
+  meta: z.object({}).passthrough()
 };
 
 function downloadContinuationSummary(
@@ -178,7 +189,7 @@ function installErrorNextAction(code: string): string | null {
     ROLLBACK_FAILED:
       "Stop writes and use rollback_mod_install with the reported transactionId.",
     RECOVERY_REQUIRED:
-      "Use rollback_mod_install with the reported transactionId before another install.",
+      "Recover through the originating workflow: restore_save_import(planId) for generic saves, or rollback_mod_install(transactionId) for legacy Mod transactions. Do not replay interrupted writes.",
     DEPENDENCY_UNRESOLVED:
       "Review the normalized dependency graph and resolve every required external, unavailable, cyclic, or depth-limited node.",
     DOWNLOAD_PLAN_STALE:
@@ -312,6 +323,11 @@ export function createNexusMcpServer(
     | undefined;
   let downloadBundleServicePromise: Promise<DownloadBundleService> | undefined;
   let saveServicePromise: Promise<SaveService> | undefined;
+  let genericSavesPromise: Promise<GenericSaveImportService> | undefined;
+  const genericSaves = () => genericSavesPromise ??= GenericSaveImportService.create({
+    managerRoot: saveManagerRoot,
+    ...(options.saveProcessGuard === undefined ? {} : { processGuard: options.saveProcessGuard })
+  });
   const installs = (): Promise<InstallService> => {
     installServicePromise ??= InstallService.create(
       { managerRoot }
@@ -358,7 +374,7 @@ export function createNexusMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, bounded local installation, managed file-Mod uninstall, and Windows game-save management. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. Before downloading, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact Plan display, deterministic review classification, and apply_agentic_install_plan(planId). Apply auto_safe Plans in the same turn, request confirmation only for review_required Plans, and never apply blocked Plans. Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and review classification. For uninstall, call inspect_mod_uninstall, stop on any blocker, freeze with plan_mod_uninstall, show the exact stored plan with get_mod_uninstall_plan, and follow review.nextAction. Re-run verify_mod_uninstall after apply. Active required dependents always block both planning and apply. For saves, create and verify an immutable Save Backup, freeze and show the exact Restore or Replacement Plan, and follow review.nextAction; use sandbox targets for validation and never substitute shell copy commands. Never replace MCP installation, uninstall, or save-restore tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall or save recovery."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, bounded local installation, managed file-Mod uninstall, and Windows game-save management. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. For Mod/dependency-bundle downloads, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact Plan display, deterministic review classification, and apply_agentic_install_plan(planId). Apply auto_safe Plans in the same turn, request confirmation only for review_required Plans, and never apply blocked Plans. Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and review classification. For uninstall, call inspect_mod_uninstall, stop on any blocker, freeze with plan_mod_uninstall, show the exact stored plan with get_mod_uninstall_plan, and follow review.nextAction. Re-run verify_mod_uninstall after apply. Active required dependents always block both planning and apply. For ordinary saves, use evidence-led research, prepare_download with persistent_chromium, inspect_save_input(stage:true), plan_save_import, and apply_save_import; no registered Recipe or Context is required. Retain complete tool results and stable IDs. Keep the same download session and server instance through start/status/login continuation. Retain imported saves and verified backups; restore_save_import is recovery or requested rollback, not routine cleanup. Use specialized save tools only for actual format conversion or slot merging. Runtime load verification remains separate from file verification. Never replace MCP installation, uninstall, or save-restore tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall or save recovery."
     }
   );
 
@@ -894,17 +910,27 @@ export function createNexusMcpServer(
     {
       title: "Inspect a manual game save input",
       description:
-        "Read and hash one absolute file, directory, ZIP, RAR, or 7z; safely inventory paths and sizes, detect wrapper roots and Save Unit candidates, and persist an immutable inspection. RAR uses UnRAR with password interaction disabled; 7z uses a discovered bsdtar capability. Does not extract into or modify the source.",
+        "Inspect a file, directory, ZIP, RAR or 7z without requiring a registered game. Use stage:true to safely extract/copy into managed staging and return exact files for generic plan_save_import mappings. Optional Recipe/Context fields are only for legacy format-specific workflows. Source remains unchanged.",
       inputSchema: {
         inputPath: z.string().trim().min(3),
+        stage: z.boolean().optional(),
         saveContextId: z.string().uuid().optional(),
         recipeId: z.string().trim().min(1).optional(),
         unitId: z.string().trim().min(1).optional()
       },
+      outputSchema: {
+        ok: z.literal(true), inspection: z.object({ inspectionId: z.string().uuid() }).passthrough(),
+        stagedInput: z.object({ root: z.string(), files: z.array(z.object({}).passthrough()) }).passthrough().optional(),
+        meta: z.object({}).passthrough()
+      },
       annotations: localStateAnnotations
     },
-    async ({ inputPath, saveContextId, recipeId, unitId }) =>
+    async ({ inputPath, stage, saveContextId, recipeId, unitId }) =>
       safe(async () => {
+        if (stage) {
+          const result = await (await genericSaves()).inspect(inputPath);
+          return ok(`Staged ${result.stagedInput.files.length} file(s); use their relativePath values in explicit source-to-target mappings.`, { ok: true, ...result, meta: meta("local", null) });
+        }
         const inspection = await (await saves()).inspectSaveInput(inputPath, {
           ...(saveContextId === undefined ? {} : { saveContextId }),
           ...(recipeId === undefined ? {} : { recipeId }),
@@ -925,6 +951,45 @@ export function createNexusMcpServer(
         );
       })
   );
+
+  server.registerTool("plan_save_import", {
+    title: "Plan a researched game save import",
+    description: "Freeze exact file mappings and target prestate from an inspected source, with concrete game/player/compatibility evidence. No Recipe, Profile or Context required. Ordinary whole-file imports may have unknown internal format. Known internal conversion needs a specialist first. Only listed files are changed; deletions require explicit rationale.",
+    inputSchema: saveImportInputSchema.shape,
+    outputSchema: { ok: z.literal(true), plan: z.object({ planId: z.string().uuid() }).passthrough(), meta: z.object({}).passthrough() },
+    annotations: localStateAnnotations
+  }, async (input) => safe(async () => {
+    const plan = await (await genericSaves()).plan(input);
+    return ok(`Save import plan ${plan.planId}: ${plan.changes.length} exact file operation(s). If covered by the user's import request, apply this plan directly.`, { ok: true, plan, meta: meta("local", null) });
+  }));
+  server.registerTool("apply_save_import", {
+    title: "Back up and apply a save import",
+    description: "Apply a frozen generic import with process/prestate checks, verified backups, write-ahead recovery and file verification. Retains imported saves and backups. Repeated completed calls do not replay writes. Game load verification is separate. Interrupted operations require restore_save_import.",
+    inputSchema: { planId: z.string().uuid() },
+    outputSchema: genericSaveResultSchema,
+    annotations: { ...localStateAnnotations, destructiveHint: true, idempotentHint: true }
+  }, async ({ planId }) => safe(async () => {
+    const result = await (await genericSaves()).apply(planId);
+    return ok(`Save import ${planId}: ${result.operation?.state}. File verification only; game load not verified.`, { ok: true, ...result, meta: meta("local", null) });
+  }));
+  server.registerTool("get_save_import", {
+    title: "Get save import plan and recovery status",
+    description: "Read the frozen plan and persistent operation state by planId, including original and pre-restore backup IDs. This also works after a server restart; download session lifetimes are separate.",
+    inputSchema: { planId: z.string().uuid() }, outputSchema: genericSaveResultSchema, annotations: localReadOnlyAnnotations
+  }, async ({ planId }) => safe(async () => {
+    const result = await (await genericSaves()).get(planId);
+    return ok(`Save import ${planId}: ${result.operation?.state ?? "planned"}.`, { ok: true, ...result, meta: meta("local", null) });
+  }));
+  server.registerTool("restore_save_import", {
+    title: "Restore or recover an exact save import",
+    description: "Restore the precise files touched by a generic import, including an interrupted apply. First preserves current mapped files as rescue backups; unrelated later files remain untouched. Resumable after restart and idempotent after completion. Do not call routinely after successful import.",
+    inputSchema: { planId: z.string().uuid() },
+    outputSchema: genericSaveResultSchema,
+    annotations: { ...localStateAnnotations, destructiveHint: true, idempotentHint: true }
+  }, async ({ planId }) => safe(async () => {
+    const result = await (await genericSaves()).restore(planId);
+    return ok(`Save import ${planId}: ${result.operation?.state}.`, { ok: true, ...result, meta: meta("local", null) });
+  }));
 
   server.registerTool(
     "get_save_input_inspection",

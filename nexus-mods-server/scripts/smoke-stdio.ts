@@ -19,6 +19,11 @@ try {
   const tools = await client.listTools();
   const required = [
     "health_check",
+    "inspect_save_input",
+    "plan_save_import",
+    "apply_save_import",
+    "get_save_import",
+    "restore_save_import",
     "browser_status",
     "open_nexus_login",
     "resolve_game",

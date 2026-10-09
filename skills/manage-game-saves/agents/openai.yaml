@@ -1,4 +1,4 @@
 interface:
   display_name: "Manage Game Saves"
-  short_description: "Research, back up, restore, and safely import game saves"
-  default_prompt: "Use $manage-game-saves to locate, back up, research, download, or safely replace a Windows game save."
+  short_description: "Find, download, back up, and import Windows game saves"
+  default_prompt: "Use $manage-game-saves to find and import the most complete evidenced save for my game, installation root, and Nexus game page, keeping the result and backup."

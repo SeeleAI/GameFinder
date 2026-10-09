@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BackupStore } from "../src/install/storage/backup-store.js";
-import { SaveInputInspector } from "../src/save/package/input-inspector.js";
+import { SaveInputInspector } from "../src/save/generic/input-inspector.js";
 import { GenericSaveImportService, type SaveImportInput } from "../src/save/generic/import-service.js";
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -50,7 +50,7 @@ describe("generic save import recovery and boundaries", () => {
   it("freezes source and target bytes and rejects drift before any write", async () => {
     const f = await fixture(); const plan = await f.service.plan(f.input);
     await writeFile(path.join(plan.stagedRoot, "one.bin"), "changed-source");
-    await expect(f.service.apply(plan.planId)).rejects.toMatchObject({ code: "SAVE_PACKAGE_INVALID" });
+    await expect(f.service.apply(plan.planId)).rejects.toMatchObject({ code: "SAVE_INPUT_INVALID" });
     expect((await f.service.get(plan.planId)).operation).toBeNull();
     const second = await f.service.plan(f.input);
     await writeFile(path.join(f.targetRoot, "slot1.sav"), "changed-target");
@@ -132,7 +132,7 @@ describe("generic save import recovery and boundaries", () => {
 
   it("can query and restore independent saves after the installation directory is removed", async () => {
     const f = await fixture(); const plan = await f.service.plan(f.input); await f.service.apply(plan.planId);
-    await rm(f.input.evidence.installationRoot, { recursive: true });
+    await rm(f.input.evidence.installationRoot!, { recursive: true });
     expect((await f.service.get(plan.planId)).operation?.state).toBe("applied");
     expect((await f.service.restore(plan.planId)).operation?.state).toBe("restored");
     expect(await readFile(path.join(f.targetRoot, "slot1.sav"), "utf8")).toBe("old-one");
@@ -141,8 +141,8 @@ describe("generic save import recovery and boundaries", () => {
   it("enforces input entry and byte bounds on directory and single-file inspection", async () => {
     const f = await fixture();
     const inspector = await SaveInputInspector.create({ managerRoot: f.managerRoot, limits: { maxEntries: 1, maxSingleEntryBytes: 2 } });
-    await expect(inspector.inspect(f.input.inputPath)).rejects.toMatchObject({ code: "SAVE_ARCHIVE_UNSAFE" });
-    await expect(inspector.inspect(path.join(f.input.inputPath, "one.bin"))).rejects.toMatchObject({ code: "SAVE_ARCHIVE_UNSAFE" });
+    await expect(inspector.inspect(f.input.inputPath!)).rejects.toMatchObject({ code: "SAVE_ARCHIVE_UNSAFE" });
+    await expect(inspector.inspect(path.join(f.input.inputPath!, "one.bin"))).rejects.toMatchObject({ code: "SAVE_ARCHIVE_UNSAFE" });
   });
 
   it("serializes concurrent managers even when target roots overlap", async () => {

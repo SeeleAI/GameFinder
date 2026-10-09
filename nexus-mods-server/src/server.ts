@@ -27,13 +27,11 @@ import {
   type PlanReview,
   type PlanReviewAction
 } from "./plan-review.js";
-import type { SaveEnvironment } from "./save/context/environment.js";
 import { GenericSaveImportService, saveImportInputSchema } from "./save/generic/import-service.js";
-import type { SaveSourceFetch } from "./save/source/save-source-service.js";
-import {
-  resolveDefaultSaveManagerRoot,
-  SaveService
-} from "./save/save-service.js";
+import { resolveDefaultSaveManagerRoot } from "./save/manager-root.js";
+import { DirectSaveBackupService, directSaveBackupInputSchema } from "./save/generic/backup-service.js";
+import { LegacySaveRecoveryService, legacySaveRecoveryInputSchema } from "./save/legacy/recovery-service.js";
+import { EldenRingFileService, eldenRingAnalyzeInputSchema, eldenRingPrepareInputSchema } from "./save/formats/elden-ring.js";
 import type { QuotaSnapshot, ResponseMeta } from "./types.js";
 import { parseGameRef, parseModRef } from "./url.js";
 
@@ -68,10 +66,6 @@ const preparedDownloadOutputSchema = {
   meta: z.object({}).passthrough()
 };
 
-const preparedSaveDownloadOutputSchema = {
-  ...preparedDownloadOutputSchema,
-  candidateId: z.string().uuid()
-};
 
 const genericSaveResultSchema = {
   ok: z.literal(true),
@@ -220,48 +214,28 @@ function installErrorNextAction(code: string): string | null {
       "Stop before uninstall. Review the reported modified, protected, or replaced managed paths; do not force-delete them.",
     UNINSTALL_BLOCKED:
       "Inspect the Installation Record and Uninstall Plan state. Do not substitute rollback_mod_install or manual deletion.",
-    GAME_INSTALL_NOT_IDENTIFIED:
-      "Provide the exact Windows game root and verify that its Steam appmanifest and executable anchor still exist.",
-    SAVE_CONTEXT_NOT_FOUND:
-      "Start begin_save_location_probe, create or update a save in the game, then call complete_save_location_probe.",
-    SAVE_CONTEXT_AMBIGUOUS:
-      "Review the reported account/save-root candidates and do not write until one exact context is confirmed.",
-    SAVE_CONTEXT_STALE:
-      "Probe the game installation and resolve save locations again; do not reuse the stored context.",
     SAVE_PATH_INVALID:
-      "Correct the target so it is a safe relative path under one frozen Save Context root.",
+      "Correct the target so it is a safe relative path under the specific save target root.",
     SAVE_PATH_PROTECTED:
       "Stop; the requested path is broad, unmanaged, or traverses a reparse point.",
-    SAVE_PROBE_EXPIRED:
-      "Start a new bounded Save Location Probe and repeat the minimal in-game save action.",
-    SAVE_ADAPTER_UNSUPPORTED:
-      "No verified Windows save profile can safely perform this operation; preserve the evidence and stop.",
+    SAVE_CONVERSION_REQUIRED:
+      "The required internal conversion is not supported; preserve the input and use a suitable format-specific tool.",
     SAVE_PROCESS_RUNNING:
       "Close the game and every reported lock-sensitive platform process, then create a fresh backup or restore plan.",
     SAVE_SOURCE_CHANGED_DURING_BACKUP:
-      "Close the game and synchronization clients, then retry the backup after the Save Unit is stable.",
+      "Close the game and synchronization clients, then retry the backup after the selected files are stable.",
     SAVE_BACKUP_INVALID:
       "Stop restore work; inspect and verify the selected Save Backup before generating a new plan.",
     SAVE_INPUT_UNSUPPORTED:
       "Provide a supported regular file, directory, ZIP, RAR with UnRAR, or 7z with a discovered bsdtar capability.",
     SAVE_ARCHIVE_UNSAFE:
-      "Stop normalization and inspect the source; do not bypass archive path, type, size, or extraction checks.",
-    SAVE_PACKAGE_INVALID:
-      "Stop replacement work; inspect the frozen input and re-create a verified Standard Save Package.",
-    SAVE_SOURCE_UNAVAILABLE:
-      "Refresh the source snapshot or use the reported browser/manual handoff; do not reuse a removed, changed, or unverifiable download.",
-    SAVE_DOWNLOAD_SELECTION_AMBIGUOUS:
-      "Choose one exact frozen source candidate and file/resource selection before downloading.",
-    SAVE_INCOMPATIBLE_GAME:
-      "Select a package for the exact target game and platform.",
-    SAVE_ACCOUNT_BINDING_MISMATCH:
-      "Do not use direct replacement; select an explicit supported account-rebind or slot-import workflow.",
-    SAVE_PLAN_EXPIRED:
-      "Generate and review a fresh Save Restore Plan.",
+      "Stop staging and inspect the source; do not bypass archive path, type, size, or extraction checks.",
+    SAVE_INPUT_INVALID:
+      "Inspect the frozen input; create a new import plan only after resolving source drift or corruption.",
     SAVE_TARGET_DRIFTED:
-      "Do not retry the old plan; inspect current save state and generate a fresh Restore Plan.",
+      "Do not retry the old plan; inspect current save state and generate a fresh save import plan.",
     SAVE_RESCUE_BACKUP_FAILED:
-      "Stop before writing. Resolve the backup or process problem, then generate a fresh Restore Plan.",
+      "Stop before writing. Resolve the backup or process problem, then generate a fresh save import plan.",
     SAVE_STATIC_VERIFICATION_FAILED:
       "Do not claim success; preserve the transaction and rescue backup for recovery review.",
     SAVE_ROLLBACK_FAILED:
@@ -302,9 +276,7 @@ export function createNexusMcpServer(
   options: {
     managerRoot?: string;
     saveManagerRoot?: string;
-    saveEnvironment?: Partial<SaveEnvironment>;
     saveProcessGuard?: (processNames: ReadonlyArray<string>) => Promise<void>;
-    saveSourceFetch?: SaveSourceFetch;
   } = {}
 ): NexusMcpService {
   const downloads = new DownloadManager(client);
@@ -322,12 +294,16 @@ export function createNexusMcpServer(
     | Promise<LocalInstallationQueryService>
     | undefined;
   let downloadBundleServicePromise: Promise<DownloadBundleService> | undefined;
-  let saveServicePromise: Promise<SaveService> | undefined;
   let genericSavesPromise: Promise<GenericSaveImportService> | undefined;
   const genericSaves = () => genericSavesPromise ??= GenericSaveImportService.create({
     managerRoot: saveManagerRoot,
     ...(options.saveProcessGuard === undefined ? {} : { processGuard: options.saveProcessGuard })
   });
+  let directBackupPromise: Promise<DirectSaveBackupService> | undefined;
+  const saveBackups = () => directBackupPromise ??= DirectSaveBackupService.create({ managerRoot: saveManagerRoot,
+    ...(options.saveProcessGuard === undefined ? {} : { processGuard: options.saveProcessGuard }) });
+  let formatsPromise: Promise<EldenRingFileService> | undefined;
+  const saveFormats = () => formatsPromise ??= EldenRingFileService.create({ managerRoot: saveManagerRoot });
   const installs = (): Promise<InstallService> => {
     installServicePromise ??= InstallService.create(
       { managerRoot }
@@ -354,27 +330,11 @@ export function createNexusMcpServer(
     });
     return downloadBundleServicePromise;
   };
-  const saves = (): Promise<SaveService> => {
-    saveServicePromise ??= SaveService.create({
-      managerRoot: saveManagerRoot,
-      ...(options.saveEnvironment === undefined
-        ? {}
-        : { environment: options.saveEnvironment }),
-      ...(options.saveProcessGuard === undefined
-        ? {}
-        : { processGuard: options.saveProcessGuard }),
-      nexusClient: client,
-      ...(options.saveSourceFetch === undefined
-        ? {}
-        : { saveSourceFetch: options.saveSourceFetch })
-    });
-    return saveServicePromise;
-  };
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, bounded local installation, managed file-Mod uninstall, and Windows game-save management. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. For Mod/dependency-bundle downloads, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact Plan display, deterministic review classification, and apply_agentic_install_plan(planId). Apply auto_safe Plans in the same turn, request confirmation only for review_required Plans, and never apply blocked Plans. Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and review classification. For uninstall, call inspect_mod_uninstall, stop on any blocker, freeze with plan_mod_uninstall, show the exact stored plan with get_mod_uninstall_plan, and follow review.nextAction. Re-run verify_mod_uninstall after apply. Active required dependents always block both planning and apply. For ordinary saves, use evidence-led research, prepare_download with persistent_chromium, inspect_save_input(stage:true), plan_save_import, and apply_save_import; no registered Recipe or Context is required. Retain complete tool results and stable IDs. Keep the same download session and server instance through start/status/login continuation. Retain imported saves and verified backups; restore_save_import is recovery or requested rollback, not routine cleanup. Use specialized save tools only for actual format conversion or slot merging. Runtime load verification remains separate from file verification. Never replace MCP installation, uninstall, or save-restore tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall or save recovery."
+        "Use this server first for Nexus game identity, Mod research, dependency-aware authorized downloads, bounded local installation, managed file-Mod uninstall, and Windows game-save management. Require canonical Nexus URLs for research and download. Treat rankScope and coverage literally; search relevance is not popularity. Never expose API keys, browser cookies, or temporary download authorization. Research tools are read-only. Before marking a required Nexus dependency satisfied, call find_installed_nexus_mod instead of guessing Installation Record IDs; follow its current-verification guidance. For Mod/dependency-bundle downloads, resolve dependencies and freeze a Download Plan; download each selected file through the normal single-file backend, then create a verified Bundle Manifest from all receipts. For new installation work prefer Contract V2: list_game_profiles, probe_game_context, prepare_install_evidence, query_install_methods, then follow proposalReadiness.recommendedAction. Use a matching legacyProfileId instead of inventing explicit identity. Never invent package units; stop before Proposal when recommendedAction is stop_before_proposal. When a verified learned Method is selected, call instantiate_install_method instead of rebuilding its operations. File-tree and controlled bundled-installer Proposals require freeze_install_plan, exact Plan display, deterministic review classification, and apply_agentic_install_plan(planId). Apply auto_safe Plans in the same turn, request confirmation only for review_required Plans, and never apply blocked Plans. Controlled installers default to redirected_stdio; use pseudoterminal only when authoritative evidence proves Windows console semantics are required and operationCapabilities reports it available. Pseudoterminal mode supplies no input and does not automate interactive choices. Successful Agent Proposals may be learned as local_verified Methods, but every reuse still requires fresh Evidence, Context, Plan, and review classification. For uninstall, call inspect_mod_uninstall, stop on any blocker, freeze with plan_mod_uninstall, show the exact stored plan with get_mod_uninstall_plan, and follow review.nextAction. Re-run verify_mod_uninstall after apply. Active required dependents always block both planning and apply. For ordinary saves, use evidence-led research, prepare_download with persistent_chromium, inspect_save_input(stage:true), plan_save_import, and apply_save_import. Retain complete tool results and stable IDs. Keep the same download session and server instance through start/status/login continuation. Retain imported saves and verified backups; restore_save_import is recovery or requested rollback, not routine cleanup. Use specialized save tools only for actual format conversion or slot merging. Runtime load verification remains separate from file verification. Never replace MCP installation, uninstall, or save-restore tools with shell copy, extraction, process execution, or deletion. rollback_mod_install recovers incomplete legacy file transactions; it is not uninstall or save recovery."
     }
   );
 
@@ -396,527 +356,14 @@ export function createNexusMcpServer(
   );
 
   server.registerTool(
-    "list_game_save_profiles",
-    {
-      title: "List Windows game save profiles",
-      description:
-        "List built-in, versioned profiles used to discover Windows game save locations and Save Units. Does not scan disks or modify game/save files.",
-      inputSchema: {},
-      annotations: localReadOnlyAnnotations
-    },
-    async () =>
-      safe(async () => {
-        const profiles = (await saves()).listProfiles();
-        return ok(`Listed ${profiles.length} game save profiles.`, {
-          ok: true,
-          profiles,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "list_save_distribution_resolvers",
-    {
-      title: "List save installation resolvers",
-      description: "List registered Windows save-installation Resolver families and versions.",
-      inputSchema: {},
-      annotations: localReadOnlyAnnotations
-    },
-    async () => safe(async () => {
-      const resolvers = (await saves()).listInstallResolversV2();
-      return ok(`Listed ${resolvers.length} save installation resolvers.`, { ok: true, resolvers, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "list_save_location_strategies",
-    {
-      title: "List save location strategies",
-      description: "List registered data-driven Windows Save Location Strategies and versions.",
-      inputSchema: {},
-      annotations: localReadOnlyAnnotations
-    },
-    async () => safe(async () => {
-      const strategies = (await saves()).listLocationStrategiesV2();
-      return ok(`Listed ${strategies.length} save location strategies.`, { ok: true, strategies, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "list_save_layout_families",
-    {
-      title: "List save layout families",
-      description: "List generic Save Layout Families used to materialize exact managed paths.",
-      inputSchema: {},
-      annotations: localReadOnlyAnnotations
-    },
-    async () => safe(async () => {
-      const layouts = (await saves()).listLayoutFamiliesV2();
-      return ok(`Listed ${layouts.length} save layout families.`, { ok: true, layouts, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "list_game_save_recipes",
-    {
-      title: "List Game Save Recipes",
-      description: "List immutable data-driven Game Save Recipes and their identity hashes.",
-      inputSchema: {},
-      annotations: localReadOnlyAnnotations
-    },
-    async () => safe(async () => {
-      const recipes = (await saves()).listRecipesV2();
-      return ok(`Listed ${recipes.length} Game Save Recipes.`, { ok: true, recipes, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "get_game_save_recipe",
-    {
-      title: "Get one Game Save Recipe",
-      description: "Read and hash-verify one immutable Game Save Recipe.",
-      inputSchema: { recipeId: z.string().trim().min(1) },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ recipeId }) => safe(async () => {
-      const recipe = (await saves()).getRecipeV2(recipeId);
-      return ok(`Verified Game Save Recipe ${recipeId}.`, { ok: true, recipe, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "probe_save_game_install",
-    {
-      title: "Identify a game install for save management",
-      description:
-        "Resolve one exact Windows game root to a hashed Game Install Context using Steam-library, RUNE-emulator, or verified manual-PE evidence. Writes only local context metadata; never modifies the game or saves.",
-      inputSchema: {
-        gameRoot: z.string().trim().min(3),
-        recipeId: z.string().trim().min(1).optional(),
-        resolverHint: z.enum(["steam-library", "rune-steam-emulator", "manual-pe"]).optional()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ gameRoot, recipeId, resolverHint }) =>
-      safe(async () => {
-        const context = await (await saves()).probeGameInstall({
-          gameRoot,
-          ...(recipeId === undefined ? {} : { recipeId }),
-          ...(resolverHint === undefined ? {} : { resolverHint })
-        });
-        return ok(
-          `Identified ${context.game.displayName} at ${context.gameRoot}.`,
-          {
-            ok: true,
-            installContext: context,
-            meta: meta("local", null)
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "get_save_game_install_context",
-    {
-      title: "Read one save-management Game Install Context",
-      description:
-        "Read and hash-verify one stored Game Install Context. Does not modify the game or saves.",
-      inputSchema: {
-        installContextId: z.string().uuid()
-      },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ installContextId }) =>
-      safe(async () => {
-        const context = await (await saves()).getGameInstallContext(
-          installContextId
-        );
-        return ok(`Verified Game Install Context ${installContextId}.`, {
-          ok: true,
-          installContext: context,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "resolve_save_locations",
-    {
-      title: "Resolve local game save locations",
-      description:
-        "Resolve a stored Game Install Context to a validated Windows Save Context using built-in or local-verified profile evidence. Writes only local context metadata; never modifies game saves.",
-      inputSchema: {
-        installContextId: z.string().uuid()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ installContextId }) =>
-      safe(async () => {
-        const context = await (await saves()).resolveSaveLocations(
-          installContextId
-        );
-        return ok(
-          `Confirmed ${context.saveRoots.length} save root(s) for ${installContextId}.`,
-          {
-            ok: true,
-            saveContext: context,
-            meta: meta("local", null)
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "get_save_context",
-    {
-      title: "Read one Save Context",
-      description:
-        "Read and hash-verify one stored Save Context, including exact roots, Save Units, evidence, and managed paths. Does not modify game saves.",
-      inputSchema: {
-        saveContextId: z.string().uuid()
-      },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ saveContextId }) =>
-      safe(async () => {
-        const context = await (await saves()).getSaveContext(saveContextId);
-        return ok(`Verified Save Context ${saveContextId}.`, {
-          ok: true,
-          saveContext: context,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "begin_save_location_probe",
-    {
-      title: "Begin a bounded save-location probe",
-      description:
-        "Snapshot only profile-declared Windows observation roots before the user performs a minimal in-game save action. Writes probe metadata only; never modifies game saves or starts the game.",
-      inputSchema: {
-        installContextId: z.string().uuid()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ installContextId }) =>
-      safe(async () => {
-        const probe = await (await saves()).beginSaveLocationProbe(
-          installContextId
-        );
-        return ok(
-          `Started Save Location Probe ${probe.probeId}; create or update one save, close the game, then complete this probe.`,
-          {
-            ok: true,
-            probe,
-            nextAction:
-              "Launch the game, perform one minimal save-producing action, close it, then call complete_save_location_probe with this probeId.",
-            meta: meta("local", null)
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "complete_save_location_probe",
-    {
-      title: "Complete a bounded save-location probe",
-      description:
-        "Compare the same profile-declared roots, report changes, and persist a local_verified profile only when one unique Save Unit root is observed. Never modifies game saves.",
-      inputSchema: {
-        probeId: z.string().uuid()
-      },
-      annotations: {
-        ...localStateAnnotations,
-        idempotentHint: true
-      }
-    },
-    async ({ probeId }) =>
-      safe(async () => {
-        const result = await (await saves()).completeSaveLocationProbe(
-          probeId
-        );
-        return ok(
-          result.saveContext
-            ? `Completed probe ${probeId} and confirmed Save Context ${result.saveContext.saveContextId}.`
-            : `Completed probe ${probeId}; no unique Save Context was confirmed.`,
-          {
-            ok: true,
-            ...result,
-            meta: meta(
-              "local",
-              null,
-              result.saveContext
-                ? []
-                : [
-                    "Do not guess a save path; inspect the reported changes or start a new probe."
-                  ]
-            )
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "create_save_backup",
-    {
-      title: "Create a verified game save backup",
-      description:
-        "Capture one profile-declared Save Unit into immutable content-addressed storage, verify source stability and every stored object, and publish a hashed Backup Record. Reads but never modifies the source save files.",
-      inputSchema: {
-        saveContextId: z.string().uuid(),
-        unitId: z.string().trim().min(1).max(200),
-        reason: z
-          .enum(["manual", "acceptance_baseline"])
-          .default("manual")
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ saveContextId, unitId, reason }) =>
-      safe(async () => {
-        const backup = await (await saves()).createSaveBackup({
-          saveContextId,
-          unitId,
-          reason
-        });
-        return ok(
-          `Created and verified Save Backup ${backup.backupId} with ${backup.files.length} file(s).`,
-          {
-            ok: true,
-            backup,
-            meta: meta("local", null, [
-              "The source Save Unit was read and hash-checked but not modified."
-            ])
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "list_save_backups",
-    {
-      title: "List game save backups",
-      description:
-        "List immutable Save Backup Records, optionally limited to one Save Context. Does not access or modify game saves.",
-      inputSchema: {
-        saveContextId: z.string().uuid().optional()
-      },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ saveContextId }) =>
-      safe(async () => {
-        const backups = await (await saves()).listSaveBackups(saveContextId);
-        return ok(`Listed ${backups.length} Save Backup Record(s).`, {
-          ok: true,
-          backups,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "inspect_save_backup",
-    {
-      title: "Inspect one game save backup",
-      description:
-        "Read and hash-verify one immutable Save Backup Record. This checks record integrity but use verify_save_backup to re-check every content object.",
-      inputSchema: {
-        backupId: z.string().uuid()
-      },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ backupId }) =>
-      safe(async () => {
-        const backup = await (await saves()).getSaveBackup(backupId);
-        return ok(`Inspected Save Backup ${backupId}.`, {
-          ok: true,
-          backup,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "verify_save_backup",
-    {
-      title: "Verify one game save backup",
-      description:
-        "Re-hash every content object and the logical file tree referenced by one immutable Save Backup Record. Does not modify game saves.",
-      inputSchema: {
-        backupId: z.string().uuid()
-      },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ backupId }) =>
-      safe(async () => {
-        const backup = await (await saves()).verifySaveBackup(backupId);
-        return ok(`Fully verified Save Backup ${backupId}.`, {
-          ok: true,
-          backup,
-          integrity: "verified",
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "plan_save_restore",
-    {
-      title: "Freeze a game save Restore Plan",
-      description:
-        "Verify a Save Backup, snapshot exact target preconditions, and freeze an immutable Restore Plan. The sandbox target is manager-controlled; the save-context target is the live profile-declared root. Planning does not modify either target.",
-      inputSchema: {
-        backupId: z.string().uuid(),
-        saveContextId: z.string().uuid(),
-        mode: z.enum(["overlay", "exact_managed_snapshot"]).default("overlay"),
-        targetKind: z.enum(["save-context", "sandbox"]).default("save-context"),
-        reviewMode: planReviewModeSchema.default("auto_safe")
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ backupId, saveContextId, mode, targetKind, reviewMode }) =>
-      safe(async () => {
-        const plan = await (await saves()).planSaveRestore({
-          backupId,
-          saveContextId,
-          mode,
-          targetKind,
-          reviewMode
-        });
-        const review = reviewForPlan({
-          review: plan.review,
-          action: "restore",
-          targetIds: [plan.backupId, plan.saveContextId, plan.target.rootId],
-          planHash: plan.planHash
-        });
-        return ok(
-          `Frozen Save Restore Plan ${plan.restorePlanId} with ${plan.operations.length} operation(s). ${reviewSummary("Restore Plan", plan.restorePlanId, review)}`,
-          {
-            ok: true,
-            plan,
-            review,
-            meta: meta("local", null, [
-              "No target files were modified.",
-              targetKind === "sandbox"
-                ? "Apply writes only to the controlled validation sandbox."
-                : "Apply targets the live Save Context and will first require a verified rescue backup."
-            ])
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "get_save_restore_plan",
-    {
-      title: "Get one game save Restore Plan",
-      description:
-        "Read and hash-verify one immutable, unexpired Save Restore Plan and its deterministic review classification.",
-      inputSchema: {
-        restorePlanId: z.string().uuid()
-      },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ restorePlanId }) =>
-      safe(async () => {
-        const plan = await (await saves()).getSaveRestorePlan(restorePlanId);
-        const review = reviewForPlan({
-          review: plan.review,
-          action: "restore",
-          targetIds: [plan.backupId, plan.saveContextId, plan.target.rootId],
-          planHash: plan.planHash
-        });
-        return ok(`Retrieved Save Restore Plan ${restorePlanId}. ${reviewSummary("Restore Plan", restorePlanId, review)}`, {
-          ok: true,
-          plan,
-          review,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "apply_save_restore",
-    {
-      title: "Apply one executable game save Restore Plan",
-      description:
-        "Apply only one exact restorePlanId through locking, rescue backup for live targets, staging, durable journaling, static verification, and automatic rollback. Auto-safe Plans may execute in the same turn; review-required Plans require confirmation; blocked Plans must not be applied. Accepts no mutable paths or operations.",
-      inputSchema: {
-        restorePlanId: z.string().uuid()
-      },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: true,
-        openWorldHint: false
-      }
-    },
-    async ({ restorePlanId }) =>
-      safe(async () => {
-        const result = await (await saves()).applySaveRestore(restorePlanId);
-        const review = reviewForPlan({
-          review: result.plan.review,
-          action: "restore",
-          targetIds: [
-            result.plan.backupId,
-            result.plan.saveContextId,
-            result.plan.target.rootId
-          ],
-          planHash: result.plan.planHash
-        });
-        return ok(
-          result.idempotentReplay
-            ? `Restore Plan ${restorePlanId} was already committed; returned its existing operation record.`
-            : `Applied Restore Plan ${restorePlanId}; static verification passed.`,
-          {
-            ok: true,
-            ...result,
-            review,
-            meta: meta("local", null, [
-              result.plan.target.kind === "sandbox"
-                ? "The live Save Context was not modified."
-                : "Static verification passed; in-game runtime verification has not run."
-            ])
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "verify_save_restore",
-    {
-      title: "Verify a committed game save restore",
-      description:
-        "Re-read a committed Save Operation Record and statically verify every frozen postcondition at its restore target.",
-      inputSchema: {
-        recordId: z.string().uuid()
-      },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ recordId }) =>
-      safe(async () => {
-        const record = await (await saves()).verifySaveRestore(recordId);
-        return ok(`Verified Save Restore Operation ${recordId}.`, {
-          ok: true,
-          record,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
     "inspect_save_input",
     {
       title: "Inspect a manual game save input",
       description:
-        "Inspect a file, directory, ZIP, RAR or 7z without requiring a registered game. Use stage:true to safely extract/copy into managed staging and return exact files for generic plan_save_import mappings. Optional Recipe/Context fields are only for legacy format-specific workflows. Source remains unchanged.",
+        "Inspect a file, directory, ZIP, RAR or 7z without requiring a registered game. Use stage:true to safely extract/copy into managed staging and return exact files for generic plan_save_import mappings. Source remains unchanged.",
       inputSchema: {
         inputPath: z.string().trim().min(3),
-        stage: z.boolean().optional(),
-        saveContextId: z.string().uuid().optional(),
-        recipeId: z.string().trim().min(1).optional(),
-        unitId: z.string().trim().min(1).optional()
+        stage: z.boolean().optional()
       },
       outputSchema: {
         ok: z.literal(true), inspection: z.object({ inspectionId: z.string().uuid() }).passthrough(),
@@ -925,36 +372,20 @@ export function createNexusMcpServer(
       },
       annotations: localStateAnnotations
     },
-    async ({ inputPath, stage, saveContextId, recipeId, unitId }) =>
+    async ({ inputPath, stage }) =>
       safe(async () => {
         if (stage) {
           const result = await (await genericSaves()).inspect(inputPath);
           return ok(`Staged ${result.stagedInput.files.length} file(s); use their relativePath values in explicit source-to-target mappings.`, { ok: true, ...result, meta: meta("local", null) });
         }
-        const inspection = await (await saves()).inspectSaveInput(inputPath, {
-          ...(saveContextId === undefined ? {} : { saveContextId }),
-          ...(recipeId === undefined ? {} : { recipeId }),
-          ...(unitId === undefined ? {} : { unitId })
-        });
-        return ok(
-          `Inspected save input ${inspection.inspectionId}; found ${inspection.payloadCandidates.length} payload candidate(s).`,
-          {
-            ok: true,
-            inspection,
-            meta: meta("local", null, [
-              "The original input was read and hashed but not modified.",
-              ...(inspection.payloadCandidates.length !== 1
-                ? ["Do not normalize until one exact payloadSelectionId is chosen."]
-                : [])
-            ])
-          }
-        );
+        const inspection = await (await genericSaves()).inspector.inspect(inputPath);
+        return ok(`Inspected ${inspection.entries.length} entries.`, { ok: true, inspection, meta: meta("local", null) });
       })
   );
 
   server.registerTool("plan_save_import", {
     title: "Plan a researched game save import",
-    description: "Freeze exact file mappings and target prestate from an inspected source, with concrete game/player/compatibility evidence. No Recipe, Profile or Context required. Ordinary whole-file imports may have unknown internal format. Known internal conversion needs a specialist first. Only listed files are changed; deletions require explicit rationale.",
+    description: "Freeze exact file mappings and target prestate from an inspected source, with concrete game/player/compatibility evidence. Ordinary whole-file imports may have unknown internal format. Known internal conversion needs a specialist first. Only listed files are changed; deletions require explicit rationale.",
     inputSchema: saveImportInputSchema.shape,
     outputSchema: { ok: z.literal(true), plan: z.object({ planId: z.string().uuid() }).passthrough(), meta: z.object({}).passthrough() },
     annotations: localStateAnnotations
@@ -991,900 +422,67 @@ export function createNexusMcpServer(
     return ok(`Save import ${planId}: ${result.operation?.state}.`, { ok: true, ...result, meta: meta("local", null) });
   }));
 
-  server.registerTool(
-    "get_save_input_inspection",
-    {
-      title: "Get one Save Input Inspection",
-      description:
-        "Read and hash-verify one immutable Save Input Inspection before choosing a payload.",
-      inputSchema: { inspectionId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ inspectionId }) =>
-      safe(async () => {
-        const inspection = await (await saves()).getSaveInputInspection(inspectionId);
-        return ok(`Verified Save Input Inspection ${inspectionId}.`, {
-          ok: true,
-          inspection,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "normalize_save_package",
-    {
-      title: "Normalize one inspected save payload",
-      description:
-        "Re-verify the original input, safely extract only through manager staging, copy the exact selected payload into immutable package storage, create content objects and a deterministic Standard Save Package, then fully re-verify it. Does not modify game saves or the original input.",
-      inputSchema: {
-        inspectionId: z.string().uuid(),
-        payloadSelectionId: z.string().uuid()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ inspectionId, payloadSelectionId }) =>
-      safe(async () => {
-        const savePackage = await (await saves()).normalizeSavePackage({
-          inspectionId,
-          payloadSelectionId
-        });
-        return ok(`Created and verified Standard Save Package ${savePackage.packageId}.`, {
-          ok: true,
-          package: savePackage,
-          meta: meta("local", null, [
-            "No game save files were modified.",
-            "Claims remain unknown unless separately supplied by a verified source."
-          ])
-        });
-      })
-  );
-
-  server.registerTool(
-    "research_nexus_save_sources",
-    {
-      title: "Research Nexus game save candidates",
-      description:
-        "Map a frozen Game Install Context to its canonical Nexus game domain, search completion-oriented save candidates, verify published Mod details, MAIN/primary files and requirements, rank author claims separately from popularity evidence, and persist an immutable source snapshot with drift status. Does not download files.",
-      inputSchema: {
-        installContextId: z.string().uuid(),
-        query: z.string().trim().min(1).max(500).optional(),
-        maxCandidates: z.number().int().min(1).max(50).default(10)
-      },
-      annotations: readOnlyAnnotations
-    },
-    async ({ installContextId, query, maxCandidates }) =>
-      safe(async () => {
-        const result = await (await saves()).researchNexusSaveSources({
-          installContextId,
-          ...(query === undefined ? {} : { query }),
-          maxCandidates
-        });
-        return ok(`Frozen Nexus save source snapshot ${result.snapshot.snapshotId} with ${result.candidates.length} candidate(s).`, {
-          ok: true,
-          ...result,
-          meta: meta("nexus-graphql-v2", client.lastQuota, result.snapshot.warnings)
-        });
-      })
-  );
-
-  server.registerTool(
-    "research_speedrun_save_sources",
-    {
-      title: "Research Speedrun.com Saves resources",
-      description:
-        "Read the canonical Speedrun.com Resources page mapped by a Game Save Profile and persist only entries in the Saves category. Tools, Splits and Patches are never promoted. Cloudflare or interactive hosts return an explicit browser/manual handoff.",
-      inputSchema: { installContextId: z.string().uuid() },
-      annotations: readOnlyAnnotations
-    },
-    async ({ installContextId }) =>
-      safe(async () => {
-        const result = await (await saves()).researchSpeedrunSaveSources({ installContextId });
-        return ok(`Frozen Speedrun save source snapshot ${result.snapshot.snapshotId} with ${result.candidates.length} save resource(s).`, {
-          ok: true,
-          ...result,
-          meta: meta("local", null, result.snapshot.warnings)
-        });
-      })
-  );
-
-  server.registerTool(
-    "record_speedrun_save_page_snapshot",
-    {
-      title: "Parse a controlled Speedrun Saves page snapshot",
-      description:
-        "Parse HTML already obtained from a controlled browser for one Profile-mapped Speedrun Resources page, optionally with canonical resource detail-page HTML. Persists an immutable source snapshot and never executes page scripts or downloads links.",
-      inputSchema: {
-        installContextId: z.string().uuid(),
-        pageHtml: z.string().min(1).max(5 * 1024 * 1024),
-        detailPages: z.record(z.string().url(), z.string().max(5 * 1024 * 1024)).optional()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ installContextId, pageHtml, detailPages }) =>
-      safe(async () => {
-        const result = await (await saves()).researchSpeedrunSaveSnapshot({
-          installContextId,
-          pageHtml,
-          ...(detailPages === undefined ? {} : { detailPages })
-        });
-        return ok(`Parsed Speedrun Saves snapshot ${result.snapshot.snapshotId}; found ${result.candidates.length} candidate(s).`, {
-          ok: true,
-          ...result,
-          meta: meta("local", null, result.snapshot.warnings)
-        });
-      })
-  );
-
-  server.registerTool(
-    "get_save_source_snapshot",
-    {
-      title: "Get one immutable save source snapshot",
-      description: "Read and hash-verify a Nexus or Speedrun Save Source Snapshot, including source drift states.",
-      inputSchema: { snapshotId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ snapshotId }) =>
-      safe(async () => {
-        const snapshot = await (await saves()).getSaveSourceSnapshot(snapshotId);
-        return ok(`Verified Save Source Snapshot ${snapshotId}.`, {
-          ok: true,
-          snapshot,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "get_save_source_candidate",
-    {
-      title: "Get one frozen save source candidate",
-      description: "Read and hash-verify one exact Nexus file or Speedrun Saves resource selection before download.",
-      inputSchema: { candidateId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ candidateId }) =>
-      safe(async () => {
-        const candidate = await (await saves()).getSaveSourceCandidate(candidateId);
-        return ok(`Verified ${candidate.source} Save Source Candidate ${candidateId}.`, {
-          ok: true,
-          candidate,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "prepare_nexus_save_download",
-    {
-      title: "Prepare one frozen Nexus save download",
-      description:
-        "Prepare the exact Mod ID and File ID from one available frozen Nexus Save Source Candidate through the existing native or persistent Chromium backend. Does not download until the normal download tool is called.",
-      inputSchema: {
-        candidateId: z.string().uuid(),
-        backend: z.enum(["native", "persistent_chromium"]).default("native")
-      },
-      outputSchema: preparedSaveDownloadOutputSchema,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true
-      }
-    },
-    async ({ candidateId, backend }) =>
-      safe(async () => {
-        const candidate = await (await saves()).getSaveSourceCandidate(candidateId);
-        if (candidate.selection.kind !== "nexus" || candidate.status !== "available") {
-          throw new NexusError("SAVE_SOURCE_UNAVAILABLE", "Candidate is not an available Nexus file selection.");
-        }
-        const selection = candidate.selection;
-        const [{ mod }, { files }] = await Promise.all([
-          client.getMod(selection.domainName, selection.modId),
-          client.getModFiles(selection.domainName, selection.modId)
-        ]);
-        if (!mod.available || mod.status.toLowerCase() !== "published") {
-          throw new NexusError("SAVE_SOURCE_UNAVAILABLE", "The frozen Nexus candidate is no longer published.");
-        }
-        const file = selectDownloadFile(files, selection.fileId);
-        if (
-          file.fileId !== selection.fileId ||
-          file.fileName !== selection.fileName ||
-          file.sizeInBytes !== selection.sizeInBytes
-        ) {
-          throw new NexusError(
-            "SAVE_SOURCE_UNAVAILABLE",
-            "Nexus file metadata drifted after the source snapshot; refresh research before downloading."
-          );
-        }
-        const prepared = backend === "persistent_chromium"
-          ? browserDownloads.prepare({
-              domainName: selection.domainName,
-              modId: selection.modId,
-              canonicalUrl: candidate.pageUrl,
-              file
-            })
-          : await (async () => {
-              const validation = await client.validateCredentials();
-              return downloads.prepare({
-                domainName: selection.domainName,
-                modId: selection.modId,
-                canonicalUrl: candidate.pageUrl,
-                file,
-                isPremium: validation.isPremium
-              });
-            })();
-        sessionBackends.set(prepared.sessionId, backend);
-        return ok(downloadContinuationSummary(
-          `Prepared exact Nexus save candidate ${candidateId} for ${backend} download.`,
-          prepared
-        ), {
-          ok: true,
-          candidateId,
-          download: prepared,
-          meta: meta("nexus-rest-v1", client.lastQuota, [
-            "After download completion, call record_nexus_save_download with the generated receipt path."
-          ])
-        });
-      })
-  );
-
-  server.registerTool(
-    "record_nexus_save_download",
-    {
-      title: "Bind a verified Nexus receipt to a save candidate",
-      description:
-        "Re-hash an existing Nexus download and receipt, require exact domain/Mod/File identity against the frozen save candidate, then persist a credential-free Save Download Receipt.",
-      inputSchema: {
-        candidateId: z.string().uuid(),
-        nexusReceiptPath: z.string().trim().min(3)
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ candidateId, nexusReceiptPath }) =>
-      safe(async () => {
-        const receipt = await (await saves()).recordNexusSaveDownload({ candidateId, nexusReceiptPath });
-        return ok(`Recorded verified Nexus Save Download Receipt ${receipt.receiptId}.`, {
-          ok: true,
-          receipt,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "download_speedrun_save",
-    {
-      title: "Download one direct Speedrun save resource",
-      description:
-        "Download the exact direct HTTP(S) URL frozen in an available Speedrun Saves candidate, enforce bounded redirects and size, hash and archive-check the file, atomically expose it without overwrite, and persist a redacted verified receipt. Interactive hosts require manual handoff instead.",
-      inputSchema: {
-        candidateId: z.string().uuid(),
-        outputDirectory: z.string().trim().min(3)
-      },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true
-      }
-    },
-    async ({ candidateId, outputDirectory }) =>
-      safe(async () => {
-        const receipt = await (await saves()).downloadSpeedrunSave({ candidateId, outputDirectory });
-        return ok(`Downloaded and verified Speedrun Save Receipt ${receipt.receiptId}.`, {
-          ok: true,
-          receipt,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "record_manual_save_download",
-    {
-      title: "Bind a manually downloaded file to a save candidate",
-      description:
-        "Hash and archive-check one absolute local file supplied through a browser/manual source handoff, then bind it to one exact frozen Nexus or Speedrun candidate. Does not copy, extract, or modify the input.",
-      inputSchema: {
-        candidateId: z.string().uuid(),
-        absolutePath: z.string().trim().min(3)
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ candidateId, absolutePath }) =>
-      safe(async () => {
-        const receipt = await (await saves()).recordManualSaveDownload({ candidateId, absolutePath });
-        return ok(`Recorded manual-handoff Save Download Receipt ${receipt.receiptId}.`, {
-          ok: true,
-          receipt,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "verify_save_download_receipt",
-    {
-      title: "Verify one Save Download Receipt",
-      description: "Hash-verify immutable source provenance and the exact downloaded file bytes before inspection or normalization.",
-      inputSchema: { receiptId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ receiptId }) =>
-      safe(async () => {
-        const receipt = await (await saves()).verifySaveDownloadReceipt(receiptId);
-        return ok(`Verified Save Download Receipt ${receiptId}.`, {
-          ok: true,
-          receipt,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "inspect_downloaded_save",
-    {
-      title: "Inspect a verified downloaded save",
-      description:
-        "Re-verify a Save Download Receipt and inspect its exact file through the normal archive/input safety pipeline. Persists an immutable Save Input Inspection without extraction into game paths.",
-      inputSchema: { receiptId: z.string().uuid() },
-      annotations: localStateAnnotations
-    },
-    async ({ receiptId }) =>
-      safe(async () => {
-        const inspection = await (await saves()).inspectDownloadedSave(receiptId);
-        return ok(`Inspected downloaded save; found ${inspection.payloadCandidates.length} payload candidate(s).`, {
-          ok: true,
-          receiptId,
-          inspection,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "normalize_downloaded_save_package",
-    {
-      title: "Normalize a verified downloaded save",
-      description:
-        "Require an exact verified receipt/inspection match, safely normalize the selected payload, and create a Standard Save Package carrying frozen Nexus or Speedrun provenance and author claims. Does not modify game saves.",
-      inputSchema: {
-        receiptId: z.string().uuid(),
-        inspectionId: z.string().uuid(),
-        payloadSelectionId: z.string().uuid()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ receiptId, inspectionId, payloadSelectionId }) =>
-      safe(async () => {
-        const savePackage = await (await saves()).normalizeDownloadedSavePackage({
-          receiptId,
-          inspectionId,
-          payloadSelectionId
-        });
-        return ok(`Created verified sourced Standard Save Package ${savePackage.packageId}.`, {
-          ok: true,
-          package: savePackage,
-          meta: meta("local", null, [
-            "Source progress, version, DLC, and online-safety fields remain author claims."
-          ])
-        });
-      })
-  );
-
-  server.registerTool(
-    "inspect_standard_save_package",
-    {
-      title: "Inspect one Standard Save Package",
-      description:
-        "Read and hash-verify one immutable Standard Save Package manifest without touching its target game.",
-      inputSchema: { packageId: z.string().regex(/^savepkg-[a-f0-9]{64}$/) },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ packageId }) =>
-      safe(async () => {
-        const savePackage = await (await saves()).getStandardSavePackage(packageId);
-        return ok(`Inspected Standard Save Package ${packageId}.`, {
-          ok: true,
-          package: savePackage,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "verify_standard_save_package",
-    {
-      title: "Verify one Standard Save Package",
-      description:
-        "Re-hash the immutable manifest and every physical payload file, reject missing, extra, changed, or unsafe paths, and return the verified package.",
-      inputSchema: { packageId: z.string().regex(/^savepkg-[a-f0-9]{64}$/) },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ packageId }) =>
-      safe(async () => {
-        const savePackage = await (await saves()).verifyStandardSavePackage(packageId);
-        return ok(`Fully verified Standard Save Package ${packageId}.`, {
-          ok: true,
-          package: savePackage,
-          integrity: "verified",
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "assess_save_adapter_requirement",
-    {
-      title: "Assess whether a save operation needs a format Adapter",
-      description: "Create an immutable, operation-scoped G6 assessment from the verified Save Context, optional Standard Save Package, Recipe, layout, binding, format, and bounded static evidence. This is read-only with respect to game saves and never treats a missing visible account ID as proof of compatibility.",
-      inputSchema: {
-        saveContextId: z.string().uuid(),
-        packageId: z.string().regex(/^savepkg-[a-f0-9]{64}$/).optional(),
-        intendedOperation: z.enum([
-          "backup",
-          "restore-exact-bytes",
-          "replace-whole-unit",
-          "import-slot-file",
-          "import-container-slot",
-          "cross-account-import",
-          "version-conversion"
-        ]),
-        sourceSlot: z.number().int().min(0).max(100000).optional(),
-        targetSlot: z.number().int().min(0).max(100000).optional(),
-        allowWholeUnitFallback: z.boolean().default(false)
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ saveContextId, packageId, intendedOperation, sourceSlot, targetSlot, allowWholeUnitFallback }) => safe(async () => {
-      const result = await (await saves()).assessSaveAdapterRequirement({
-        saveContextId,
-        ...(packageId === undefined ? {} : { packageId }),
-        intendedOperation,
-        ...(sourceSlot === undefined ? {} : { sourceSlot }),
-        ...(targetSlot === undefined ? {} : { targetSlot }),
-        allowWholeUnitFallback
-      });
-      return ok(`Adapter Requirement Assessment ${result.assessment.assessmentId}: ${result.assessment.requirement}.`, {
-        ok: true,
-        ...result,
-        meta: meta("local", null, [
-          result.assessment.replacementPlanAllowed
-            ? "The assessment permits its scoped replacement path; Compatibility and immutable Plan checks still apply."
-            : "No real Replacement Plan is permitted by this assessment."
-        ])
-      });
-    })
-  );
-
-  server.registerTool(
-    "get_save_adapter_requirement_assessment",
-    {
-      title: "Get one Adapter Requirement Assessment",
-      description: "Read and hash-verify one immutable operation-scoped Adapter Requirement Assessment.",
-      inputSchema: { assessmentId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ assessmentId }) => safe(async () => {
-      const assessment = await (await saves()).getSaveAdapterRequirementAssessment(assessmentId);
-      return ok(`Verified Adapter Requirement Assessment ${assessmentId}.`, {
-        ok: true,
-        assessment,
-        meta: meta("local", null)
-      });
-    })
-  );
-
-  server.registerTool(
-    "get_save_adapter_development_brief",
-    {
-      title: "Get one Adapter Development Brief",
-      description: "Read and hash-verify the immutable development brief generated only when a required format Adapter is missing.",
-      inputSchema: { briefId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ briefId }) => safe(async () => {
-      const brief = await (await saves()).getSaveAdapterDevelopmentBrief(briefId);
-      return ok(`Verified Adapter Development Brief ${briefId}.`, {
-        ok: true,
-        brief,
-        meta: meta("local", null)
-      });
-    })
-  );
-
-  server.registerTool(
-    "assess_save_package_compatibility",
-    {
-      title: "Assess a save package against one Save Context",
-      description:
-        "Verify package and context identity, format, managed paths, essential files, and account binding, then persist an immutable compatibility assessment. Does not plan or write a target.",
-      inputSchema: {
-        packageId: z.string().regex(/^savepkg-[a-f0-9]{64}$/),
-        saveContextId: z.string().uuid()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ packageId, saveContextId }) =>
-      safe(async () => {
-        const assessment = await (await saves()).assessSavePackageCompatibility({
-          packageId,
-          saveContextId
-        });
-        return ok(`Compatibility assessment ${assessment.assessmentId}: ${assessment.state}.`, {
-          ok: true,
-          assessment,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "analyze_elden_ring_save_path",
-    {
-      title: "Analyze an Elden Ring PC save file",
-      description: "Read-only parse one absolute ER0000.sl2 path, require the exact supported BND4 layout, verify all ten slot MD5 values and the header-section MD5, and persist an immutable analysis.",
-      inputSchema: { absolutePath: z.string().trim().min(3) },
-      annotations: localStateAnnotations
-    },
-    async ({ absolutePath }) => safe(async () => {
-      const analysis = await (await saves()).analyzeEldenRingSavePath(absolutePath);
-      return ok(`Analyzed Elden Ring save ${analysis.analysisId}; ${analysis.slots.filter((slot) => slot.active).length} active slot(s).`, {
-        ok: true, analysis, meta: meta("local", null, ["No save bytes were modified."])
-      });
-    })
-  );
-
-  server.registerTool(
-    "analyze_elden_ring_package",
-    {
-      title: "Analyze an Elden Ring Standard Save Package",
-      description: "Verify one Standard Save Package and deeply parse its exact ER0000.sl2 object without modifying it.",
-      inputSchema: { packageId: z.string().regex(/^savepkg-[a-f0-9]{64}$/) },
-      annotations: localStateAnnotations
-    },
-    async ({ packageId }) => safe(async () => {
-      const analysis = await (await saves()).analyzeEldenRingPackage(packageId);
-      return ok(`Analyzed Elden Ring package save ${analysis.analysisId}.`, { ok: true, analysis, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "analyze_elden_ring_save_context",
-    {
-      title: "Analyze a live Elden Ring Save Context",
-      description: "Read-only verify and parse the primary ER0000.sl2 in one confirmed Elden Ring Steam PC Save Context, including embedded account identity.",
-      inputSchema: { saveContextId: z.string().uuid() },
-      annotations: localStateAnnotations
-    },
-    async ({ saveContextId }) => safe(async () => {
-      const analysis = await (await saves()).analyzeEldenRingSaveContext(saveContextId);
-      return ok(`Analyzed target Elden Ring save ${analysis.analysisId}.`, { ok: true, analysis, meta: meta("local", null, ["No save bytes were modified."]) });
-    })
-  );
-
-  server.registerTool(
-    "get_elden_ring_save_analysis",
-    {
-      title: "Get an Elden Ring save analysis",
-      description: "Read and hash-verify one immutable Elden Ring save analysis.",
-      inputSchema: { analysisId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ analysisId }) => safe(async () => {
-      const analysis = await (await saves()).getEldenRingSaveAnalysis(analysisId);
-      return ok(`Verified Elden Ring save analysis ${analysisId}.`, { ok: true, analysis, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "plan_elden_ring_slot_import",
-    {
-      title: "Plan an Elden Ring character-slot import",
-      description: "Freeze exact source/target file hashes, source and target slots, SteamID64 rebind, MD5 updates, overwritten character if any, preserved slots, and the four allowed byte ranges. Does not modify the live save.",
-      inputSchema: {
-        packageId: z.string().regex(/^savepkg-[a-f0-9]{64}$/),
-        saveContextId: z.string().uuid(),
-        sourceSlot: z.number().int().min(0).max(9).optional(),
-        targetSlot: z.number().int().min(0).max(9).optional(),
-        allowOccupiedTarget: z.boolean().optional()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ packageId, saveContextId, sourceSlot, targetSlot, allowOccupiedTarget }) => safe(async () => {
-      const plan = await (await saves()).planEldenRingSlotImport({
-        packageId, saveContextId,
-        ...(sourceSlot === undefined ? {} : { sourceSlot }),
-        ...(targetSlot === undefined ? {} : { targetSlot }),
-        ...(allowOccupiedTarget === undefined ? {} : { allowOccupiedTarget })
-      });
-      return ok(`Frozen Elden Ring Slot Import Plan ${plan.slotImportPlanId}: source slot ${plan.sourceSlot} to target slot ${plan.targetSlot}.`, {
-        ok: true, plan, meta: meta("local", null, ["The live save was not modified.", "Staging is separate from approval to write the live save."])
-      });
-    })
-  );
-
-  server.registerTool(
-    "get_elden_ring_slot_import_plan",
-    {
-      title: "Get an Elden Ring Slot Import Plan",
-      description: "Read and hash-verify one immutable, unexpired staging plan.",
-      inputSchema: { slotImportPlanId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ slotImportPlanId }) => safe(async () => {
-      const plan = await (await saves()).getEldenRingSlotImportPlan(slotImportPlanId);
-      return ok(`Verified Elden Ring Slot Import Plan ${slotImportPlanId}.`, { ok: true, plan, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "stage_elden_ring_slot_import",
-    {
-      title: "Stage an Elden Ring character-slot import",
-      description: "Apply one frozen Slot Import Plan only to manager-owned staging: copy the selected slot, rebind embedded SteamID64 occurrences, update slot/header MD5, verify allowed byte ranges and unchanged slots. Never writes the live save.",
-      inputSchema: { slotImportPlanId: z.string().uuid() },
-      annotations: localStateAnnotations
-    },
-    async ({ slotImportPlanId }) => safe(async () => {
-      const stagedImport = await (await saves()).stageEldenRingSlotImport(slotImportPlanId);
-      return ok(`Created verified staged Elden Ring import ${stagedImport.stagedImportId}.`, {
-        ok: true, stagedImport, meta: meta("local", null, ["The live save and its .bak companion were not modified."])
-      });
-    })
-  );
-
-  server.registerTool(
-    "verify_elden_ring_staged_import",
-    {
-      title: "Verify a staged Elden Ring slot import",
-      description: "Re-hash and deeply parse a manager-owned staged import and verify its immutable record and target account/slot binding.",
-      inputSchema: { stagedImportId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ stagedImportId }) => safe(async () => {
-      const stagedImport = await (await saves()).verifyEldenRingStagedImport(stagedImportId);
-      return ok(`Verified staged Elden Ring import ${stagedImportId}.`, { ok: true, stagedImport, meta: meta("local", null) });
-    })
-  );
-
-  server.registerTool(
-    "plan_elden_ring_staged_replacement",
-    {
-      title: "Freeze a live Replacement Plan from an Elden Ring staged import",
-      description: "Verify one staged slot import, freeze it in content-addressed storage, snapshot the live ER0000.sl2 prestate plus preserved .bak/cloud files, and create an immutable slot_import Replacement Plan with a deterministic review classification. Planning does not modify the live save.",
-      inputSchema: {
-        stagedImportId: z.string().uuid(),
-        reviewMode: planReviewModeSchema.default("auto_safe")
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ stagedImportId, reviewMode }) => safe(async () => {
-      const plan = await (await saves()).planEldenRingStagedReplacement(
-        stagedImportId,
-        { reviewMode }
-      );
-      const review = reviewForPlan({
-        review: plan.review,
-        action: "replace",
-        targetIds: [
-          plan.stagedImportId ?? stagedImportId,
-          plan.packageId,
-          plan.saveContextId,
-          String(plan.targetSlot)
-        ],
-        planHash: plan.planHash
-      });
-      return ok(`Frozen Elden Ring Replacement Plan ${plan.replacementPlanId}. ${reviewSummary("Replacement Plan", plan.replacementPlanId, review)}`, {
-        ok: true,
-        plan,
-        review,
-        meta: meta("local", null, [
-          "No live save files were modified.",
-          "Apply requires stopped game and Steam processes and creates a verified pre-replacement rescue backup."
-        ])
-      });
-    })
-  );
-
-  server.registerTool(
-    "get_save_compatibility_assessment",
-    {
-      title: "Get one save compatibility assessment",
-      description: "Read and hash-verify one immutable Save Compatibility Assessment.",
-      inputSchema: { assessmentId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ assessmentId }) =>
-      safe(async () => {
-        const assessment = await (await saves()).getSaveCompatibilityAssessment(assessmentId);
-        return ok(`Verified Save Compatibility Assessment ${assessmentId}.`, {
-          ok: true,
-          assessment,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "plan_save_replacement",
-    {
-      title: "Freeze a direct game save Replacement Plan",
-      description:
-        "For an exact compatible_direct assessment, snapshot live target preconditions and freeze a same-account direct_replace plan. M3 rejects account rewriting and slot import. Planning does not modify the target.",
-      inputSchema: {
-        assessmentId: z.string().uuid(),
-        strategy: z.literal("direct_replace"),
-        reviewMode: planReviewModeSchema.default("auto_safe")
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ assessmentId, strategy, reviewMode }) =>
-      safe(async () => {
-        const plan = await (await saves()).planSaveReplacement({
-          assessmentId,
-          strategy,
-          reviewMode
-        });
-        const review = reviewForPlan({
-          review: plan.review,
-          action: "replace",
-          targetIds: [plan.packageId, plan.saveContextId, plan.compatibilityAssessmentId],
-          planHash: plan.planHash
-        });
-        return ok(
-          `Frozen Save Replacement Plan ${plan.replacementPlanId} with ${plan.operations.length} operation(s). ${reviewSummary("Replacement Plan", plan.replacementPlanId, review)}`,
-          {
-            ok: true,
-            plan,
-            review,
-            meta: meta("local", null, [
-              "No target files were modified.",
-              "Apply will require game and Steam processes stopped and a verified pre-replacement rescue backup."
-            ])
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "get_save_replacement_plan",
-    {
-      title: "Get one Save Replacement Plan",
-      description:
-        "Read and hash-verify one immutable, unexpired Save Replacement Plan and its deterministic review classification.",
-      inputSchema: { replacementPlanId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ replacementPlanId }) =>
-      safe(async () => {
-        const plan = await (await saves()).getSaveReplacementPlan(replacementPlanId);
-        const review = reviewForPlan({
-          review: plan.review,
-          action: "replace",
-          targetIds: [plan.packageId, plan.saveContextId, plan.compatibilityAssessmentId],
-          planHash: plan.planHash
-        });
-        return ok(`Retrieved Save Replacement Plan ${replacementPlanId}. ${reviewSummary("Replacement Plan", replacementPlanId, review)}`, {
-          ok: true,
-          plan,
-          review,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "apply_save_replacement",
-    {
-      title: "Apply one executable Save Replacement Plan",
-      description:
-        "Apply only one exact replacementPlanId through lock, mandatory verified rescue backup, staging, durable journal, atomic file replacement, static verification, and automatic rollback. Auto-safe Plans may execute in the same turn; review-required Plans require confirmation; blocked Plans must not be applied. Accepts no mutable paths or operations.",
-      inputSchema: { replacementPlanId: z.string().uuid() },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: true,
-        openWorldHint: false
-      }
-    },
-    async ({ replacementPlanId }) =>
-      safe(async () => {
-        const result = await (await saves()).applySaveReplacement(replacementPlanId);
-        const review = reviewForPlan({
-          review: result.plan.review,
-          action: "replace",
-          targetIds: [
-            result.plan.packageId,
-            result.plan.saveContextId,
-            result.plan.compatibilityAssessmentId
-          ],
-          planHash: result.plan.planHash
-        });
-        return ok(
-          result.idempotentReplay
-            ? `Replacement Plan ${replacementPlanId} was already committed; returned its operation record.`
-            : `Applied Replacement Plan ${replacementPlanId}; static verification passed.`,
-          {
-            ok: true,
-            ...result,
-            review,
-            meta: meta("local", null, [
-              "Keep Steam offline. In-game runtime verification has not run.",
-              "Preserve the rescueBackupId until the baseline has been restored and verified."
-            ])
-          }
-        );
-      })
-  );
-
-  server.registerTool(
-    "verify_save_replacement",
-    {
-      title: "Verify a committed Save Replacement",
-      description:
-        "Read the committed operation record and re-check every frozen target postcondition. Does not launch the game.",
-      inputSchema: { recordId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ recordId }) =>
-      safe(async () => {
-        const record = await (await saves()).verifySaveReplacement(recordId);
-        return ok(`Verified Save Replacement Operation ${recordId}.`, {
-          ok: true,
-          record,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "record_save_runtime_verification",
-    {
-      title: "Record user-observed save runtime verification",
-      description:
-        "Append an immutable user-observed runtime outcome for a committed restore or replacement Operation Record. This records evidence only and never launches the game or modifies saves.",
-      inputSchema: {
-        operationRecordId: z.string().uuid(),
-        outcome: z.enum(["passed", "failed", "original_restored"]),
-        notes: z.string().trim().min(1).max(4000).optional()
-      },
-      annotations: localStateAnnotations
-    },
-    async ({ operationRecordId, outcome, notes }) =>
-      safe(async () => {
-        const verification = await (await saves()).recordSaveRuntimeVerification({
-          operationRecordId,
-          outcome,
-          ...(notes === undefined ? {} : { notes })
-        });
-        return ok(`Recorded runtime verification ${verification.verificationId}: ${outcome}.`, {
-          ok: true,
-          verification,
-          meta: meta("local", null)
-        });
-      })
-  );
-
-  server.registerTool(
-    "get_save_runtime_verification",
-    {
-      title: "Get a save runtime verification record",
-      description: "Read and hash-verify one immutable Save Runtime Verification Record.",
-      inputSchema: { verificationId: z.string().uuid() },
-      annotations: localReadOnlyAnnotations
-    },
-    async ({ verificationId }) =>
-      safe(async () => {
-        const verification = await (await saves()).getSaveRuntimeVerification(verificationId);
-        return ok(`Verified Save Runtime Verification ${verificationId}.`, {
-          ok: true,
-          verification,
-          meta: meta("local", null)
-        });
-      })
-  );
+  server.registerTool("create_save_backup", {
+    title: "Back up exact game save files",
+    description: "Create a durable, hash-verified snapshot of explicit relative file paths under sourceRoot. Requires stopped relevant writers; changes no game files. Returns backupId and actual backup paths.",
+    inputSchema: directSaveBackupInputSchema.shape,
+    outputSchema: { ok: z.literal(true), backup: z.object({ backupId: z.string().uuid(), backupRoot: z.string() }).passthrough(), meta: z.object({}).passthrough() },
+    annotations: localStateAnnotations
+  }, async (input) => safe(async () => {
+    const backup = await (await saveBackups()).createBackup(input);
+    return ok(`Verified save backup ${backup.backupId}.`, { ok: true, backup, meta: meta("local", null) });
+  }));
+  server.registerTool("get_save_backup", {
+    title: "Read and verify a direct save backup",
+    description: "Read a durable backup by backupId and verify every stored file hash. No installation is required.",
+    inputSchema: { backupId: z.string().uuid() }, annotations: localReadOnlyAnnotations
+  }, async ({ backupId }) => safe(async () => {
+    const backup = await (await saveBackups()).get(backupId);
+    return ok(`Verified save backup ${backupId}.`, { ok: true, backup, meta: meta("local", null) });
+  }));
+  server.registerTool("prepare_save_backup_restore", {
+    title: "Prepare a direct save backup for import",
+    description: "Verify backup files and return explicit source mappings for plan_save_import. Then plan/apply through the same reversible import transaction to preserve the pre-restore state. Does not write saves or infer extra deletions.",
+    inputSchema: { backupId: z.string().uuid(), targetRoot: z.string().min(3).optional(), processNames: directSaveBackupInputSchema.shape.processNames.optional() },
+    annotations: localReadOnlyAnnotations
+  }, async (input) => safe(async () => {
+    const restoreInput = await (await saveBackups()).prepareRestore({ backupId: input.backupId, ...(input.targetRoot === undefined ? {} : { targetRoot: input.targetRoot }), ...(input.processNames === undefined ? {} : { processNames: input.processNames }) });
+    return ok("Backup verified; add task evidence and use plan_save_import.", { ok: true, restoreInput, meta: meta("local", null) });
+  }));
+  server.registerTool("prepare_legacy_save_recovery", {
+    title: "Export a historical save backup or operation for recovery",
+    description: "Read and verify historical backup/operation/transaction records without loading retired game registration. Export verified original files plus exact recorded deletions for plan_save_import. Old plans cannot be resumed. Missing rescue blobs or reliable operation scope block recovery without writing game files.",
+    inputSchema: legacySaveRecoveryInputSchema.shape, annotations: localStateAnnotations
+  }, async (input) => safe(async () => {
+    const restoreInput = await (await LegacySaveRecoveryService.create({ managerRoot: saveManagerRoot })).prepare(input);
+    return ok("Historical files verified; add process names and task evidence, then use plan_save_import.", { ok: true, restoreInput, meta: meta("local", null) });
+  }));
+  server.registerTool("analyze_elden_ring_save", {
+    title: "Analyze one Elden Ring PC save file",
+    description: "Validate exact SL2 length, signature, slot and header checksums and account binding; return slots and fileSha256 for explicit conversion selection. Reads only the supplied file.",
+    inputSchema: eldenRingAnalyzeInputSchema.shape, annotations: localReadOnlyAnnotations
+  }, async (input) => safe(async () => {
+    const analysis = await (await saveFormats()).analyze(input);
+    return ok("Elden Ring save structure verified; game loading remains unverified.", { ok: true, analysis, meta: meta("local", null) });
+  }));
+  server.registerTool("prepare_elden_ring_import", {
+    title: "Prepare Elden Ring account conversion and selected slots",
+    description: "Merge explicitly selected source slots into an analyzed target, rebind account bytes and checksums, preserve unselected slots, and stage validated output. Occupied slot replacement needs explicit selection and allowOverwriteOccupied. Pass returned preparationId and exact mappings to plan_save_import; destination drift blocks the plan. Never writes the live target.",
+    inputSchema: eldenRingPrepareInputSchema.shape,
+    outputSchema: { ok: z.literal(true), preparation: z.object({ preparationId: z.string().uuid(), inputPath: z.string(), targetRoot: z.string() }).passthrough(), meta: z.object({}).passthrough() },
+    annotations: localStateAnnotations
+  }, async (input) => safe(async () => {
+    const preparation = await (await saveFormats()).prepare(input);
+    return ok(`Verified conversion ${preparation.preparationId}; use its exact preparationId and mappings in plan_save_import.`, { ok: true, preparation, meta: meta("local", null) });
+  }));
+  server.registerTool("get_elden_ring_preparation", {
+    title: "Read and verify a staged Elden Ring conversion",
+    description: "Recover a persisted preparationId after restart and verify the conversion receipt and staged bytes. Live destination state is rechecked by plan_save_import and apply_save_import.",
+    inputSchema: { preparationId: z.string().uuid() }, annotations: localReadOnlyAnnotations
+  }, async ({ preparationId }) => safe(async () => {
+    const preparation = await (await saveFormats()).get(preparationId);
+    return ok(`Verified conversion ${preparationId}.`, { ok: true, preparation, meta: meta("local", null) });
+  }));
 
   server.registerTool(
     "browser_status",
@@ -2484,7 +1082,7 @@ export function createNexusMcpServer(
     {
       title: "Prepare one Nexus mod download",
       description:
-        "Prepare an explicitly requested single-mod download from a canonical Nexus Mod URL. Selects the requested fileId or latest active MAIN file. backend defaults to native; persistent_chromium prepares an asynchronous browser session without starting page clicks.",
+        "Prepare an authorized single-mod download from a canonical Nexus Mod URL. Selects the requested fileId or latest active MAIN file. backend defaults to native; persistent_chromium prepares an asynchronous browser session without starting page clicks.",
       inputSchema: {
         modUrl: z.string().url(),
         fileId: z.number().int().positive().optional(),

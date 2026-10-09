@@ -259,7 +259,7 @@ Apply revalidates dependency and filesystem state. Unmanaged generated files may
 
 ## Windows game-save workflow
 
-The default workflow starts from a game name, installation root, and canonical Nexus game page. The agent researches the installed version, actual save directory/player, and applicable source; general Nexus tools (`resolve_game`, `search_mods`, `get_mod`, `get_mod_files`, `prepare_download`) work without an Install Context. Recipes are optional knowledge, not eligibility requirements for ordinary imports.
+The default workflow starts from a game name, installation root, and canonical Nexus game page. The agent researches the installed version, actual save directory/player, and applicable source; general Nexus tools (`resolve_game`, `search_mods`, `get_mod`, `get_mod_files`, `prepare_download`) handle acquisition directly.
 
 Use the generic file workflow:
 
@@ -268,13 +268,19 @@ Use the generic file workflow:
 3. `apply_save_import(planId)` rechecks stopped writers and target state, verifies a backup of affected originals, applies the precise frozen operations, and verifies their result. Failures are journaled and rolled back; multi-file writes are recoverable, not a claim of filesystem-wide atomicity.
 4. `get_save_import(planId)` returns durable status after success, failure, or a lost response. `restore_save_import(planId)` restores affected originals, retaining the recovery-time state and unrelated files. Use the recorded operation for recovery rather than blindly creating another import.
 
-Unmapped target files remain in place. Deletes require explicit paths and justification; omissions from the source do not imply removal. The generic route needs no Profile, Recipe, Save Context, Package, or Assessment ID. Opaque complete files can be imported with applicable evidence even when internal checksums are unknown. Actual account rebinding, slot merging, resigning, or version conversion requires specialized support before import.
+Unmapped target files remain in place. Deletes require explicit paths and justification; omissions from the source do not imply removal. Opaque complete files can be imported with applicable evidence even when internal checksums are unknown. Actual account rebinding, slot merging, resigning, or version conversion requires specialized support before import.
 
 For Nexus downloads, use `backend: "persistent_chromium"` and retain the complete MCP response including `structuredContent` and the returned `download.sessionId`. Start and poll that ID on the same server instance. Missing IDs or a lost instance are blockers, not reasons to prepare again or launch a replacement server/profile. Open login at most once, only after that same session reports `login_required` or `requiresUserInteraction`; after interaction restart the original session with the original output directory. See the skill's [download protocol](../skills/manage-game-saves/references/nexus-download.md).
 
 Successful imports remain installed with a backup. Report file verification separately from observed in-game loading/progress; a normal auto-save after launch can change hashes without invalidating the import record. Restore only for requested rollback/temporary testing or failure recovery.
 
-Existing Recipe/Context/Package tools remain available for legacy operations, backup records, Elden Ring staged character-slot import, and validation-scoped Ghost of Tsushima PC v49 replacement. Their `assess_save_adapter_requirement` / `assess_save_package_compatibility` chain retains its own gates. V2 `replace-whole-unit` uses exact managed-set semantics (including deletion of omitted managed files); legacy V1 `direct_replace` overlays. Neither behavior overrides the generic route's explicit file mappings. See [special-format routing](../skills/manage-game-saves/references/special-formats.md).
+Independent backups use `create_save_backup` with `sourceRoot`, exact relative `paths`, `processNames`, and a description. `get_save_backup` verifies the snapshot. `prepare_save_backup_restore` supplies mappings for the same `plan_save_import` / `apply_save_import` transaction, preserving the current files before restoration.
+
+Elden Ring conversion uses `analyze_elden_ring_save` on explicit source and destination files, then `prepare_elden_ring_import` with both hashes and selected slots. Pass its `preparationId` and exact returned paths/mappings to `plan_save_import`. The receipt binds the conversion to the original destination state; changed progress is rejected before planning or applying. There is no registration or package object chain.
+
+Upgrades preserve all existing manager data. Generic import plan IDs remain valid. Historical backup/operation/transaction IDs use `prepare_legacy_save_recovery`, which verifies old blobs and exports explicit import/deletion scope without reactivating old plans. An independent old backup restores listed files only. Interrupted old journals without a finalized record/rescue linkage report the missing recovery data. See [historical recovery](../skills/manage-game-saves/references/historical-recovery.md). The former save registration, discovery, package, assessment and replacement tools have been removed; use normal Nexus research/download tools and the direct file workflow.
+
+`pnpm build` cleans this project's `dist` before compilation so removed modules cannot survive as stale build files. It does not remove manager records, downloads or game saves.
 
 After updating the build, new server processes expose the new tools. Restart/reconnect in a fresh client session when needed; never terminate or substitute the server hosting an active download session.
 
@@ -379,7 +385,7 @@ Implemented:
 - `open_nexus_login`;
 - Contract V2 file and controlled-installer planning, apply, verification, recovery, and learned Methods;
 - public managed file-Mod uninstall inspection, planning, apply, retained-data reporting, and verification;
-- Windows save discovery, packages, backup, restore, replacement, Elden Ring slot import, rescue, rollback, and verification;
+- Windows save input inspection, direct backup/import/restore, historical recovery, Elden Ring slot conversion, and file verification;
 - deterministic Plan review metadata with `auto_safe`, `review_required`, and `blocked` classifications.
 
 Not yet implemented:

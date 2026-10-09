@@ -1,11 +1,9 @@
 # Operations that change save internals
 
-Use specialized support when the requested operation actually requires slot extraction/merging, embedded account rebinding, resigning, or format conversion. Whole-file copying and path/name mapping alone use the main generic workflow.
+Use specialized support when applicable evidence establishes embedded account rebinding, slot merging, resigning, or format conversion. Whole-file copying and path/name mapping use the main workflow. A binary extension or unknown checksum algorithm alone does not establish a conversion requirement.
 
-Establish the requirement from applicable documentation, local/source evidence, or a supported validator. A binary extension, unknown checksum policy, or absent Recipe is not itself proof that conversion is needed. Conversely, lack of an obvious account number in a byte scan does not disprove known account binding.
+For **Elden Ring PC slot import and account conversion**, read [elden-ring.md](elden-ring.md). Its direct-file tools produce a validated preparation bound to the exact destination bytes.
 
-- **Elden Ring character-slot import:** read [elden-ring.md](elden-ring.md). Use its existing analyzed/staged adapter route and supported format scope.
-- **Existing Recipe/Package workflow:** read [legacy-tools.md](legacy-tools.md) if continuing an established legacy operation. Its assessment outcomes constrain that operation, not all ordinary imports.
-- **Other proven conversion needs:** use an available documented converter or Adapter within its supported scope and verify staged output. If none exists, preserve the source and target and report the concrete missing transformation. Developing a new converter is separate work unless requested.
+For another proven conversion requirement, use an available documented converter within its supported format. Preserve its output and verification evidence, and ensure destination-dependent conversion cannot overwrite a later destination state. If this cannot be guaranteed, report the concrete missing transformation or state check. Developing a converter is separate work unless requested.
 
-Never label an unperformed transformation as complete or use the generic route to evade a demonstrated format/account conflict. Conversion output can enter a generic import only after the required transformation has been completed and the exact file mapping and verification evidence are available.
+The generic import validates paths, frozen bytes and reversible writes. It cannot substitute for an unperformed internal conversion or prove gameplay compatibility.

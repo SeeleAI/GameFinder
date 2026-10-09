@@ -11,7 +11,6 @@ import type { NexusLoginStatus } from "../src/browser/nexus-login-controller.js"
 import type { BrowserDownloadStatus } from "../src/browser-download-manager.js";
 import { NexusError } from "../src/errors.js";
 import { NexusClient } from "../src/nexus-client.js";
-import { SaveService } from "../src/save/save-service.js";
 import { createNexusMcpServer, type NexusMcpService } from "../src/server.js";
 import type { NexusMod, NexusModFile } from "../src/types.js";
 
@@ -109,7 +108,6 @@ afterEach(async () => {
 
 describe("Recipe-free save download MCP contract", () => {
   it("prepares an unknown game and resumes the original session after explicit login", async () => {
-    const saveCreation = vi.spyOn(SaveService, "create");
     const browser = browserFixture(true);
     const mcp = await connect(browser);
     const prepared = await mcp.callTool({ name: "prepare_download",
@@ -122,7 +120,6 @@ describe("Recipe-free save download MCP contract", () => {
     expect(download).toMatchObject({ state: "prepared", mod: { canonicalUrl: modUrl }, file: { fileId: 456 } });
     expect(browser.createDownloadController).not.toHaveBeenCalled();
     expect(browser.openLogin).not.toHaveBeenCalled();
-    expect(saveCreation).not.toHaveBeenCalled();
 
     const outputDirectory = await mkdtemp(path.join(os.tmpdir(), "generic-save-download-"));
     directories.push(outputDirectory);
@@ -148,7 +145,6 @@ describe("Recipe-free save download MCP contract", () => {
     expect(await readFile(status.finalPath!)).toEqual(archive);
     expect(browser.openLogin).toHaveBeenCalledTimes(1);
     expect(browser.createDownloadController).toHaveBeenCalledTimes(2);
-    expect(saveCreation).not.toHaveBeenCalled();
 
     // A complete serialized MCP result retains both representations, including the stable ID.
     const retained = JSON.parse(JSON.stringify([prepared, started, blocked, login, resumed, completed])) as ToolResult[];

@@ -8,7 +8,6 @@ import { pipeline } from "node:stream/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ZipFile } from "yazl";
 import { NexusClient } from "../src/nexus-client.js";
-import { SaveService } from "../src/save/save-service.js";
 import { createNexusMcpServer, type NexusMcpService } from "../src/server.js";
 
 let client: Client | undefined;
@@ -67,7 +66,6 @@ afterEach(async () => {
 
 describe("generic save import MCP workflow", () => {
   it.each([false, true])("imports an unknown binary game with wrappers and renaming (installation target: %s)", async (targetIsInstallationRoot) => {
-    const legacyService = vi.spyOn(SaveService, "create");
     const f = await fixture(targetIsInstallationRoot);
     const staged = await f.client.callTool({ name: "inspect_save_input", arguments: { inputPath: f.archivePath, stage: true } });
     expect(staged.isError).not.toBe(true);
@@ -119,7 +117,6 @@ describe("generic save import MCP workflow", () => {
     await expect(stat(path.join(f.targetRoot, "metadata", "slot01.meta"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(path.join(f.targetRoot, "untouched.sav"), "utf8")).toBe("unrelated original slot");
     expect(await readFile(path.join(f.targetRoot, "later-slot.sav"), "utf8")).toBe("unrelated later slot");
-    expect(legacyService).not.toHaveBeenCalled();
   });
 
   it("rejects known internal conversion before creating a plan or mutating target files", async () => {
@@ -130,7 +127,7 @@ describe("generic save import MCP workflow", () => {
       processNames: ["unknown-game.exe"], evidence: evidence(f.installationRoot, true)
     } });
     expect(rejected.isError).toBe(true);
-    expect(rejected.structuredContent).toMatchObject({ ok: false, error: { code: "SAVE_ADAPTER_UNSUPPORTED" } });
+    expect(rejected.structuredContent).toMatchObject({ ok: false, error: { code: "SAVE_CONVERSION_REQUIRED" } });
     expect(rejected.structuredContent).not.toHaveProperty("plan");
     expect(await readFile(path.join(f.targetRoot, "slot01.sav"))).toEqual(originalSave);
     expect(f.processGuard).not.toHaveBeenCalled();

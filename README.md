@@ -47,7 +47,7 @@ The optional `agents/openai.yaml` files under skill directories provide OpenAI-s
 | Downloads | Native/NXM and persistent Chromium flows, receipts, dependency plans, and Bundle Manifests |
 | Installation | Contract V2 evidence, reusable Methods, bounded file operations, controlled installers, rollback, and verification |
 | Uninstallation | Public inspect/plan/get/apply/verify tools for committed managed file transactions, including dependent and dirty-file blockers |
-| Game saves | Agent-led discovery and Nexus downloads; generic file import with precise mappings, verified backup, rollback, and recovery without a registered Recipe; existing Elden Ring slot and Ghost of Tsushima format support |
+| Game saves | Agent-led discovery and Nexus downloads; generic file import with precise mappings, verified backup, rollback, and recovery with independent backups and historical recovery; direct Elden Ring slot conversion and retained Ghost of Tsushima format validation |
 | Mod development | Minimal project memory, interface research, bounded probes, implementation guidance, and reusable cross-game references |
 
 Mod workflows and legacy save workflows classify immutable write plans as:
@@ -58,7 +58,7 @@ Mod workflows and legacy save workflows classify immutable write plans as:
 
 `reviewMode` defaults to `auto_safe`. This does not bypass blockers or transaction guards.
 
-Ordinary save imports use `inspect_save_input` -> `plan_save_import` -> `apply_save_import`, with `get_save_import` for status and `restore_save_import` for recovery. Agents establish the target and applicable method from local/web evidence; the tool freezes exact paths and verifies backup and file writes. No Recipe, Install Context, or binary-format assessment is required for this route. Unmapped saves are retained, and successful imports remain installed with their backups. In-game loading is verified separately.
+Ordinary save imports use `inspect_save_input` -> `plan_save_import` -> `apply_save_import`, with `get_save_import` for status and `restore_save_import` for recovery. Agents establish the target and applicable method from local/web evidence; the tool freezes exact paths and verifies backup and file writes. Research determines applicability; no game registration is required. Unmapped saves are retained, and successful imports remain installed with their backups. In-game loading is verified separately.
 
 Example request:
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { analyzeGhostOfTsushimaPcV49 } from "../src/save/adapters/ghost-of-tsushima-pc-v49.js";
+import { analyzeGhostOfTsushimaPcV49 } from "../src/save/formats/ghost-of-tsushima-pc-v49.js";
 
 function validSave(): Buffer {
   const bytes = Buffer.alloc(0x220, 0x5a);

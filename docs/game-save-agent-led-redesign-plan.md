@@ -1,5 +1,7 @@
 # 存档 Skill 的 Agent 主导重构计划
 
+> Historical document. Its runtime architecture is superseded by [Remove the save Recipe system](remove-save-recipe-system-plan.md). Use the current skill and server README for supported tools.
+
 日期：2026-10-08
 
 状态：开发与离线验收完成（2026-10-09）；用户的新游戏运行时验收待执行

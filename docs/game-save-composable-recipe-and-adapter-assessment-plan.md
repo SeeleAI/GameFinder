@@ -1,5 +1,7 @@
 # 游戏存档能力泛化、组合式 Recipe 与 Adapter 智能评估开发计划
 
+> Historical document. Its runtime architecture is superseded by [Remove the save Recipe system](remove-save-recipe-system-plan.md). Use the current skill and server README for supported tools.
+
 > 状态：G0–G7 已完成；Ghost of Tsushima 真实纵向验收通过，原 baseline 已恢复
 >
 > 固定日期：2026-08-19

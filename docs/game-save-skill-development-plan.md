@@ -1,5 +1,7 @@
 # `manage-game-saves` Skill 与游戏存档管理能力开发计划
 
+> Historical document. Its runtime architecture is superseded by [Remove the save Recipe system](remove-save-recipe-system-plan.md). Use the current skill and server README for supported tools.
+
 > 状态：方案基线固定；M0–M6 已实现并通过；ER-08 下载存档真实导入与 ER-09 原始 baseline 恢复均已完成，最终状态为 `original_restored`；救援备份与验收证据已保留
 >
 > 固定日期：2026-07-30

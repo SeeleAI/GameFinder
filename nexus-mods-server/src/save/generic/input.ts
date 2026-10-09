@@ -10,7 +10,7 @@ import { sha256CanonicalJson } from "../../install/content-hash.js";
 import { inspectDirectoryTree } from "../../install/core/tree-state.js";
 import { sha256File } from "../../install/file-hash.js";
 import { normalizeSaveRelativePath } from "../path-policy.js";
-import { DEFAULT_SAVE_INPUT_LIMITS, SaveInputInspector } from "../package/input-inspector.js";
+import { DEFAULT_SAVE_INPUT_LIMITS, SaveInputInspector } from "./input-inspector.js";
 
 // Check ancestors as well as the final node: a real leaf below a junction is
 // still an unsafe write boundary. Missing suffixes are allowed for new saves.
@@ -42,7 +42,7 @@ export async function stageSaveInput(inspector: SaveInputInspector, inputPath: s
   const root = path.join(stagingParent, randomUUID());
   await mkdir(root, { recursive: true });
   const entries = inspection.entries.filter((entry) => entry.kind === "file");
-  if (entries.length === 0) throw new NexusError("SAVE_PACKAGE_INVALID", "No regular save files were found.");
+  if (entries.length === 0) throw new NexusError("SAVE_INPUT_INVALID", "No regular save files were found.");
   if (inspection.input.kind === "zip") {
     const zip = await yauzl.openPromise(inputPath, { autoClose: false, lazyEntries: true, validateEntrySizes: true });
     await new Promise<void>((resolve, reject) => {
@@ -107,13 +107,13 @@ export async function stageSaveInput(inspector: SaveInputInspector, inputPath: s
   const currentHash = inspection.input.kind === "directory"
     ? (await inspectDirectoryTree(inputPath, DEFAULT_SAVE_INPUT_LIMITS)).treeHash
     : await sha256File(inputPath);
-  if (currentHash !== inspection.input.sha256) throw new NexusError("SAVE_PACKAGE_INVALID", "Source changed while staging.");
-  if (inspection.input.kind === "file" && staged.files[0]?.sha256 !== inspection.input.sha256) throw new NexusError("SAVE_PACKAGE_INVALID", "Staged file bytes differ from source.");
+  if (currentHash !== inspection.input.sha256) throw new NexusError("SAVE_INPUT_INVALID", "Source changed while staging.");
+  if (inspection.input.kind === "file" && staged.files[0]?.sha256 !== inspection.input.sha256) throw new NexusError("SAVE_INPUT_INVALID", "Staged file bytes differ from source.");
   if (inspection.input.kind === "directory") {
     // Empty wrapper directories are irrelevant to exact file imports.
     const original = await inspectDirectoryTree(inputPath, DEFAULT_SAVE_INPUT_LIMITS);
     if (sha256CanonicalJson(original.files.map(({ relativePath, sha256 }) => ({ relativePath, sha256 }))) !== sha256CanonicalJson(staged.files.map(({ relativePath, sha256 }) => ({ relativePath, sha256 })))) {
-      throw new NexusError("SAVE_PACKAGE_INVALID", "Source bytes changed while staging.");
+      throw new NexusError("SAVE_INPUT_INVALID", "Source bytes changed while staging.");
     }
   }
   return { inspection, stagedInput: { root, files: staged.files, treeHash: staged.treeHash } };

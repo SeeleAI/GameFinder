@@ -10,21 +10,23 @@ import { InstanceLock } from "../../install/core/instance-lock.js";
 import { assertSensitiveProcessesStopped } from "../../install/core/process-guard.js";
 import { sha256File } from "../../install/file-hash.js";
 import { BackupStore } from "../../install/storage/backup-store.js";
-import { SaveInputInspector } from "../package/input-inspector.js";
+import { SaveInputInspector } from "./input-inspector.js";
 import { assertUuid, publishJsonExclusive } from "../storage/json-store.js";
 import { assertRealPath, relativeFile, stageSaveInput } from "./input.js";
+import { EldenRingFileService } from "../formats/elden-ring.js";
 
 const evidenceText = z.string().trim().min(12).max(8000);
 export const saveImportInputSchema = z.object({
-  inputPath: z.string().min(3),
+  inputPath: z.string().min(3).optional(),
+  preparationId: z.string().uuid().optional(),
   targetRoot: z.string().min(3),
-  mappings: z.array(z.object({ sourcePath: z.string().min(1), targetPath: z.string().min(1) })).min(1).max(10000),
+  mappings: z.array(z.object({ sourcePath: z.string().min(1), targetPath: z.string().min(1) })).max(10000),
   deletePaths: z.array(z.string().min(1)).max(10000).default([]),
   deletionReason: evidenceText.optional(),
   processNames: z.array(z.string().regex(/^[^\\/:*?"<>|\x00-\x1f]+$/)).min(1).max(64),
   evidence: z.object({
     gameName: z.string().trim().min(1),
-    installationRoot: z.string().min(3),
+    installationRoot: z.string().min(3).optional(),
     source: evidenceText.describe("Source URL/local provenance and selected completion claims."),
     target: evidenceText.describe("Why this precise directory belongs to the intended game and player."),
     compatibility: evidenceText.describe("Concrete version/platform/DLC applicability evidence and remaining uncertainty."),
@@ -40,6 +42,7 @@ const planSchema = z.object({
   schemaVersion: z.literal(1), planId: z.string().uuid(), createdAt: z.string(),
   targetRoot: z.string(), stagedRoot: z.string(),
   processNames: z.array(z.string()), evidence: saveImportInputSchema.shape.evidence,
+  preparationId: z.string().uuid().optional(),
   deletionReason: z.string().nullable(), changes: z.array(changeSchema), planHash: z.string(),
 });
 type Plan = z.infer<typeof planSchema>;
@@ -95,16 +98,19 @@ export class GenericSaveImportService {
       options.processGuard ?? assertSensitiveProcessesStopped, options.checkpoint);
   }
 
+  private get conversionStagingRoot() { return path.resolve(this.root, "../formats/elden-ring/staging"); }
+
   async inspect(inputPath: string) {
+    if (within(this.conversionStagingRoot, path.resolve(inputPath))) throw new NexusError("SAVE_STAGING_INVALID", "Use the conversion preparationId directly in plan_save_import; do not detach converted bytes from their destination prestate.");
     return await stageSaveInput(this.inspector, inputPath, path.join(this.root, "staging"));
   }
 
   private target(plan: Plan, name: string): string { return path.join(plan.targetRoot, ...relativeFile(name).split("/")); }
 
-  private async checkRoot(targetRoot: string, installationRoot: string, requireInstallation = false) {
-    if (!path.isAbsolute(targetRoot) || !path.isAbsolute(installationRoot)) throw new NexusError("SAVE_PATH_INVALID", "Target and installation roots must be absolute.");
+  private async checkRoot(targetRoot: string, installationRoot: string | undefined, requireInstallation = false) {
+    if (!path.isAbsolute(targetRoot) || (installationRoot !== undefined && !path.isAbsolute(installationRoot))) throw new NexusError("SAVE_PATH_INVALID", "Target and installation roots must be absolute.");
     await assertRealPath(targetRoot);
-    if (requireInstallation) {
+    if (requireInstallation && installationRoot !== undefined) {
       await assertRealPath(installationRoot);
       const installation = await lstat(installationRoot);
       if (!installation.isDirectory()) throw new NexusError("SAVE_PATH_INVALID", "Installation root must be a real directory.");
@@ -124,11 +130,20 @@ export class GenericSaveImportService {
 
   async plan(raw: SaveImportInput) {
     const input = saveImportInputSchema.parse(raw);
-    if (input.evidence.knownConversionRequired) throw new NexusError("SAVE_ADAPTER_UNSUPPORTED", "Complete the known conversion with a suitable tool before planning a byte-preserving import.");
+    if (input.evidence.knownConversionRequired) throw new NexusError("SAVE_CONVERSION_REQUIRED", "Complete the known conversion with a suitable tool before planning a byte-preserving import.");
     if (input.deletePaths.length && !input.deletionReason) throw new NexusError("EVIDENCE_INSUFFICIENT", "Explicit deletion requires its task or format rationale.");
+    if (!input.mappings.length && !input.deletePaths.length) throw new NexusError("INVALID_INPUT", "Select at least one import or deletion.");
     const targetRoot = path.resolve(input.targetRoot);
     await this.checkRoot(input.targetRoot, input.evidence.installationRoot, true);
-    const staged = await this.inspect(input.inputPath);
+    if (input.mappings.length && !input.inputPath) throw new NexusError("INVALID_INPUT", "Import mappings require inputPath.");
+    const conversion = input.preparationId ? await (await EldenRingFileService.create({ managerRoot: path.resolve(this.root, "../..") })).get(input.preparationId) : null;
+    if (input.inputPath && within(this.conversionStagingRoot, path.resolve(input.inputPath)) && !conversion) throw new NexusError("SAVE_STAGING_INVALID", "Converted input requires its preparationId.");
+    if (conversion && (!input.inputPath || path.resolve(input.inputPath) !== conversion.inputPath || targetRoot !== conversion.targetRoot
+      || sha256CanonicalJson(input.mappings) !== sha256CanonicalJson(conversion.mappings) || input.deletePaths.length)) {
+      throw new NexusError("SAVE_STAGING_INVALID", "Import must use the exact converted input, destination and mappings from its receipt.");
+    }
+    const staged = input.mappings.length ? await stageSaveInput(this.inspector, input.inputPath!, path.join(this.root, "staging")) : { stagedInput: { root: path.join(this.root, "staging", randomUUID()), files: [] } };
+    if (!input.mappings.length) await mkdir(staged.stagedInput.root, { recursive: true });
     const paths: string[] = [];
     const changes: Plan["changes"] = [];
     for (const mapping of [...input.mappings, ...input.deletePaths.map((targetPath) => ({ targetPath, sourcePath: null }))]) {
@@ -139,12 +154,18 @@ export class GenericSaveImportService {
       paths.push(key);
       const sourcePath = mapping.sourcePath === null ? null : relativeFile(mapping.sourcePath);
       const sourceFile = sourcePath === null ? null : staged.stagedInput.files.find((file) => file.relativePath === sourcePath);
-      if (sourcePath && (!sourceFile || EXECUTABLE.test(sourcePath))) throw new NexusError("SAVE_PACKAGE_INVALID", "Selected source must be an inspected non-executable file.");
+      if (sourcePath && (!sourceFile || EXECUTABLE.test(sourcePath))) throw new NexusError("SAVE_INPUT_INVALID", "Selected source must be an inspected non-executable file.");
       const before = await fileState(path.join(targetRoot, ...targetPath.split("/")));
+      if (conversion) {
+        const expected = conversion.expectedTargets.find((item) => item.targetPath === targetPath);
+        if (!expected || !equal(before, { sha256: expected.sha256, bytes: expected.bytes })) throw new NexusError("SAVE_TARGET_DRIFTED", "Destination changed after conversion; analyze and prepare again to preserve new progress.");
+        if (sourceFile?.sha256 !== conversion.stagedSha256) throw new NexusError("SAVE_STAGING_INVALID", "Conversion source changed while freezing.");
+      }
       changes.push({ targetPath, sourcePath, source: sourceFile ? { sha256: sourceFile.sha256, bytes: sourceFile.bytes } : null, before });
     }
     const body = { schemaVersion: 1 as const, planId: randomUUID(), createdAt: new Date().toISOString(), targetRoot,
       stagedRoot: staged.stagedInput.root, processNames: input.processNames, evidence: input.evidence,
+      ...(input.preparationId ? { preparationId: input.preparationId } : {}),
       deletionReason: input.deletionReason ?? null, changes };
     const plan = planSchema.parse({ ...body, planHash: sha256CanonicalJson(body) });
     await publishJsonExclusive(path.join(this.root, "plans", `${plan.planId}.json`), plan);
@@ -253,7 +274,7 @@ export class GenericSaveImportService {
         for (const phase of ["import", "restore"]) {
           if (await fileState(`${this.target(plan, change.targetPath)}.${plan.planId}.save-${phase}-tmp`)) throw new NexusError("SAVE_TARGET_DRIFTED", "An operation staging path already exists before apply.");
         }
-        if (change.sourcePath && !equal(await fileState(path.join(plan.stagedRoot, ...change.sourcePath.split("/"))), change.source)) throw new NexusError("SAVE_PACKAGE_INVALID", "Frozen source bytes changed.");
+        if (change.sourcePath && !equal(await fileState(path.join(plan.stagedRoot, ...change.sourcePath.split("/"))), change.source)) throw new NexusError("SAVE_INPUT_INVALID", "Frozen source bytes changed.");
       }
       const record: RecordState = { planId, state: "backing_up", backups: {}, touched: [], restored: [], rescue: {}, rescueHistory: [], artifacts: [], restoreExpected: {}, updatedAt: new Date().toISOString(), error: null };
       await this.writeRecord(record);
@@ -275,7 +296,7 @@ export class GenericSaveImportService {
           await this.writeRecord(record); // write-ahead intent before mutation
           await this.checkpoint?.(`before_write:${change.targetPath}`);
           const source = change.sourcePath ? path.join(plan.stagedRoot, ...change.sourcePath.split("/")) : null;
-          if (source && !equal(await fileState(source), change.source)) throw new NexusError("SAVE_PACKAGE_INVALID", "Frozen source bytes changed before publish.");
+          if (source && !equal(await fileState(source), change.source)) throw new NexusError("SAVE_INPUT_INVALID", "Frozen source bytes changed before publish.");
           await this.publish(plan, change, source, change.before);
           await this.checkpoint?.(`after_write:${change.targetPath}`);
           await this.verifyState(plan, change, change.source);
